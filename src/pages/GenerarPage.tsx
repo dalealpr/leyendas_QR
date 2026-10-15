@@ -112,10 +112,11 @@ export function GenerarPage() {
             <QRCodeCanvas
               ref={canvasRef}
               value={selected.code}
-              size={512}
+              size={512} // resolución del PNG descargado
               marginSize={2}
               level="M"
-              className="h-auto w-full"
+              // tamaño en pantalla: se adapta al contenedor (la librería pone 512px fijos por defecto)
+              style={{ width: '100%', height: 'auto' }}
             />
           </div>
           <p className="break-all font-mono text-xs text-muted">{selected.code}</p>
