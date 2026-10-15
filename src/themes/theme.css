@@ -1,0 +1,33 @@
+/*
+ * Paleta de colores del proyecto.
+ * Cambia un valor aquí y se actualiza en toda la app.
+ *
+ * Cada variable --color-NOMBRE genera las clases de Tailwind:
+ *   bg-NOMBRE, text-NOMBRE, border-NOMBRE, etc.
+ *   Ej: --color-primary → bg-primary, text-primary, border-primary
+ */
+@theme {
+  /* Fondos */
+  --color-background: #000000;     /* fondo general de la app */
+  --color-surface: #141414;        /* tarjetas (ej. caja del login) */
+  --color-surface-strong: #262626; /* botones secundarios (ej. Salir) */
+  --color-surface-hover: #333333;  /* hover de botones secundarios */
+
+  /* Bordes */
+  --color-line: #3a3a3a;           /* bordes de inputs y separadores */
+
+  /* Textos */
+  --color-foreground: #f1f5f9;      /* texto principal */
+  --color-foreground-soft: #cbd5e1; /* labels, pestañas inactivas */
+  --color-muted: #d0aa45;           /* textos secundarios, íconos */
+
+  /* Color principal (botones, pestaña activa, foco de inputs) */
+  --color-primary: #d0aa45;
+  --color-primary-hover: #e0bf63;   /* dorado un poco más claro */
+  --color-on-primary: #000000;      /* texto sobre el dorado (negro se lee mejor que blanco) */
+
+  /* Estados */
+  --color-danger: #ef4444;          /* errores, QR inválido / ya usado */
+  --color-danger-soft: #fca5a5;     /* texto de mensajes de error */
+  --color-success: #22c55e;         /* ingreso OK */
+}
