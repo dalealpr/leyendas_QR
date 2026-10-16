@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { Scanner, type IDetectedBarcode, type IScannerError } from '@yudiel/react-qr-scanner'
 import { supabase } from '../lib/supabase'
+import { useAuth } from '../context/auth-context'
+import { useActiveEvent } from '../hooks/useActiveEvent'
 import type { ValidateTicketResult } from '../types/ticket'
 import { feedbackError, feedbackOk } from '../utils/feedback'
 
@@ -21,6 +23,10 @@ function formatTime(iso: string): string {
 }
 
 export function EscanearPage() {
+  const { role } = useAuth()
+  const isAdmin = role === 'admin'
+  const { activeEvent, loaded } = useActiveEvent()
+
   const [result, setResult] = useState<ScanResult | null>(null)
   const [cameraError, setCameraError] = useState<string | null>(null)
   // Evita procesar dos lecturas a la vez (onScan puede llegar varias veces seguidas)
@@ -57,6 +63,23 @@ export function EscanearPage() {
     setCameraError(cameraErrors[err.kind] ?? `Error de cámara: ${err.message}`)
   }
 
+  // El staff (no admin) solo escanea con un evento activo: sin él, ni se abre la cámara
+  if (!isAdmin && !loaded) {
+    return <div className="flex flex-1 items-center justify-center text-muted">Cargando…</div>
+  }
+  if (!isAdmin && !activeEvent) {
+    return (
+      <div className="flex flex-1 flex-col items-center justify-center gap-3 p-8 text-center">
+        <span className="text-5xl" aria-hidden="true">
+          ⏸
+        </span>
+        <p className="text-xl font-bold">El evento no ha sido activado</p>
+        <p className="text-foreground-soft">Actívalo con la cuenta admin para poder escanear.</p>
+        <p className="text-xs text-muted">Esta pantalla se actualiza sola cuando se active.</p>
+      </div>
+    )
+  }
+
   return (
     <div className="relative flex-1 overflow-hidden bg-black">
       <Scanner
@@ -74,6 +97,19 @@ export function EscanearPage() {
           video: { width: '100%', height: '100%', objectFit: 'cover' },
         }}
       />
+
+      {/* Qué evento se está validando */}
+      <div className="pointer-events-none absolute inset-x-0 top-3 flex justify-center px-3">
+        <span className="flex max-w-full items-center gap-2 truncate rounded-full bg-black/70 px-4 py-2 text-sm font-semibold text-white">
+          <span
+            className={`h-2 w-2 shrink-0 rounded-full ${activeEvent ? 'bg-success' : 'bg-primary'}`}
+            aria-hidden="true"
+          />
+          {isAdmin
+            ? `Admin · acepta todos los eventos${activeEvent ? ` (activo: ${activeEvent.name})` : ''}`
+            : activeEvent?.name}
+        </span>
+      </div>
 
       {cameraError && (
         <div className="absolute inset-0 flex items-center justify-center bg-background p-6 text-center">
@@ -98,6 +134,12 @@ function ResultOverlay({ result, onClose }: { result: ScanResult; onClose: () =>
     detail = `Usado a las ${formatTime(result.used_at)}`
   } else if (result.reason === 'invalido') {
     title = 'QR INVÁLIDO'
+  } else if (result.reason === 'otro_evento') {
+    title = 'OTRO EVENTO'
+    detail = result.event_name ? `Este QR es de ${result.event_name}` : null
+  } else if (result.reason === 'sin_evento_activo') {
+    title = 'SIN EVENTO ACTIVO'
+    detail = 'Pide al admin que active el evento'
   } else {
     title = 'ERROR'
     detail = result.message

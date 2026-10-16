@@ -4,6 +4,7 @@ import { AppLayout } from '../components/layouts/AppLayout'
 import { LoginPage } from '../pages/LoginPage'
 import { ContadorPage } from '../pages/ContadorPage'
 import { GenerarPage } from '../pages/GenerarPage'
+import { EditarPage } from '../pages/EditarPage'
 import { EscanearPage } from '../pages/EscanearPage'
 import { useAuth } from '../context/auth-context'
 import { homeFor } from '../utils/roles'
@@ -24,9 +25,13 @@ export function AppRouter() {
           <Route element={<AppLayout />}>
             <Route path="/escanear" element={<EscanearPage />} />
 
-            <Route element={<ProtectedRoute allow={['admin']} />}>
+            <Route element={<ProtectedRoute allow={['admin', 'dashboard', 'scanner']} />}>
               <Route path="/contador" element={<ContadorPage />} />
+            </Route>
+
+            <Route element={<ProtectedRoute allow={['admin']} />}>
               <Route path="/generar" element={<GenerarPage />} />
+              <Route path="/editar" element={<EditarPage />} />
             </Route>
           </Route>
         </Route>

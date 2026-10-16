@@ -1,2 +1,8 @@
 @import "tailwindcss";
 @import "./themes/theme.css";
+
+/* Colores base para todo lo que se dibuja fuera de la app (ej. modales en <body>) */
+body {
+  background-color: var(--color-background);
+  color: var(--color-foreground);
+}

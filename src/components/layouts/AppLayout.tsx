@@ -3,9 +3,10 @@ import { useAuth } from '../../context/auth-context'
 import type { Role } from '../../types/auth'
 
 const links: { to: string; label: string; roles: Role[] }[] = [
-  { to: '/contador', label: 'Contador', roles: ['admin'] },
+  { to: '/contador', label: 'Contador', roles: ['admin', 'dashboard', 'scanner'] },
   { to: '/generar', label: 'Generar', roles: ['admin'] },
-  { to: '/escanear', label: 'Escanear', roles: ['admin', 'scanner'] },
+  { to: '/editar', label: 'Editar', roles: ['admin'] },
+  { to: '/escanear', label: 'Escanear', roles: ['admin', 'dashboard', 'scanner'] },
 ]
 
 export function AppLayout() {
@@ -14,14 +15,16 @@ export function AppLayout() {
 
   return (
     <div className="flex min-h-dvh flex-col bg-background text-foreground">
-      <header className="flex items-center justify-between gap-2 border-b border-line px-4 py-3">
-        <nav className="flex gap-1">
+      <header className="flex items-center justify-between gap-2 border-b border-line px-3 py-3 sm:px-4">
+        {/* En celulares angostos las pestañas se deslizan hacia el lado */}
+        <nav className="-my-1 flex min-w-0 gap-1 overflow-x-auto py-1">
+
           {visible.map((l) => (
             <NavLink
               key={l.to}
               to={l.to}
               className={({ isActive }) =>
-                `rounded-lg px-3 py-2 text-sm font-semibold ${
+                `shrink-0 rounded-lg px-2.5 py-2 text-sm font-semibold sm:px-3 ${
                   isActive ? 'bg-primary text-on-primary' : 'text-foreground-soft hover:bg-surface'
                 }`
               }
@@ -30,7 +33,7 @@ export function AppLayout() {
             </NavLink>
           ))}
         </nav>
-        <div className="flex items-center gap-3">
+        <div className="flex shrink-0 items-center gap-3">
           <span className="hidden text-xs text-muted sm:inline">{session?.user.email}</span>
           <button
             onClick={signOut}
