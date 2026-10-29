@@ -221,9 +221,17 @@ export function ContadorPage({ tableOnly = false }: ContadorPageProps) {
       .order('created_at', { ascending: false })
       .range(from, from + PAGE_SIZE - 1)
     if (effectiveFilter !== ALL) query = query.eq('event_id', effectiveFilter)
-    // Ventana Invitados: solo leyendas que todavía no se escanean
-    // (salvo el filtro de escaneados cuyo invitado llega después)
-    if (tableOnly && effectiveStatus !== 'used_guest_pending') query = query.is('used_at', null)
+    // Ventana Invitados, "Todos": lo que todavía falta por entrar →
+    //   leyendas sin escanear + leyendas escaneadas cuyo invitado todavía puede llegar
+    //   (solo en eventos con invitados; las marcadas "Sin invitado" no esperan a nadie).
+    // Los demás filtros de la ventana ya dicen si la leyenda está escaneada o no.
+    if (tableOnly && effectiveStatus === 'all') {
+      query = guestEventIds
+        ? query
+            .or(`used_at.is.null,and(guest_at.is.null,event_id.in.(${guestEventIds}))`)
+            .is('ticket_guest_declined', null)
+        : query.is('used_at', null)
+    }
     if (typeof yearsFilter === 'number') query = query.eq('ticket_years.years', yearsFilter)
     if (effectiveStatus === 'used') query = query.not('used_at', 'is', null)
     if (effectiveStatus !== 'all' && effectiveStatus !== 'used') {
@@ -615,10 +623,10 @@ export function ContadorPage({ tableOnly = false }: ContadorPageProps) {
           <h2 className="truncate text-sm font-semibold uppercase tracking-wide text-foreground-soft">
             {tableOnly ? (
               <>
-                {effectiveStatus === 'used_guest_pending' ? 'Escaneadas · invitado pendiente' : 'Leyendas no escaneadas'}
+                {effectiveStatus === 'used_guest_pending' ? 'Escaneadas · invitado pendiente' : 'Pendientes por ingresar'}
                 {effectiveFilter !== ALL && ` · ${eventName(effectiveFilter ?? '')}`}{' '}
                 <span className="text-warning tabular-nums">
-                  {value(effectiveStatus === 'used_guest_pending' ? guestsWaiting : pending)}
+                  {value(effectiveStatus === 'used_guest_pending' ? guestsWaiting : pending + guestsWaiting)}
                 </span>
               </>
             ) : effectiveFilter === ALL ? (
@@ -652,8 +660,8 @@ export function ContadorPage({ tableOnly = false }: ContadorPageProps) {
               .map((o) => {
                 const selected = effectiveStatus === o.value
                 const count = {
-                  // En la ventana Invitados "Todos" son las leyendas sin escanear
-                  all: tableOnly ? pending : total,
+                  // Ventana Invitados, "Todos": sin escanear + escaneadas con invitado por llegar
+                  all: tableOnly ? pending + guestsWaiting : total,
                   used,
                   guest_in: guestsIn,
                   used_guest_pending: guestsWaiting,
@@ -716,7 +724,7 @@ export function ContadorPage({ tableOnly = false }: ContadorPageProps) {
             debouncedSearch
               ? `Ningún nombre coincide con “${search.trim()}”.`
               : tableOnly && effectiveStatus === 'all'
-                ? 'Todas las leyendas ya fueron escaneadas.'
+                ? 'No queda nadie por ingresar: leyendas e invitados completos.'
                 : effectiveStatus === 'all' && yearsFilter === 'all'
                 ? 'Todavía no hay QR para este evento.'
                 : 'No hay QR con estos filtros.'
