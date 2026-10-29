@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/auth-context'
 import { useActiveEvent } from '../hooks/useActiveEvent'
@@ -17,6 +17,18 @@ const ALL = 'all'
 const PAGE_SIZE = 10
 
 type TicketRow = Pick<Ticket, 'id' | 'name' | 'event_id' | 'used_at' | 'guest_at' | 'created_at'>
+
+/** Filtro de la tabla por status */
+type StatusFilter = 'all' | 'used' | 'guest_in' | 'used_guest_pending'
+
+/** guests = solo se muestra si hay eventos con invitados activados */
+const statusOptions: { value: StatusFilter; label: string; guests?: boolean }[] = [
+  { value: 'all', label: 'Todos' },
+  { value: 'used', label: 'Leyendas escaneadas' },
+  { value: 'guest_in', label: 'Invitados ingresados', guests: true },
+  // La leyenda ya ingresó y su invitado todavía no
+  { value: 'used_guest_pending', label: 'Escaneados · invitado pendiente', guests: true },
+]
 
 function formatDate(iso: string): string {
   return new Date(iso).toLocaleString('es', {
@@ -72,6 +84,21 @@ export function ContadorPage() {
     setPage(0)
   }
 
+  // Filtro por status. Los de invitados solo existen si hay eventos con invitados activados.
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>('all')
+  // Como texto, para no recargar la tabla cada vez que se refrescan los totales
+  const guestEventIds = (stats ?? [])
+    .filter((s) => s.guests_enabled && (effectiveFilter === ALL || s.event_id === effectiveFilter))
+    .map((s) => s.event_id)
+    .join(',')
+  const isGuestFilter = statusOptions.some((o) => o.guests && o.value === statusFilter)
+  const effectiveStatus: StatusFilter = isGuestFilter && !guestEventIds ? 'all' : statusFilter
+
+  const changeStatusFilter = (value: StatusFilter) => {
+    setStatusFilter(value)
+    setPage(0)
+  }
+
   const loadTickets = useCallback(async () => {
     const requestId = ++lastRequest.current
     // Sin evento activo, quien no puede elegir no ve nada
@@ -89,6 +116,14 @@ export function ContadorPage() {
       .order('created_at', { ascending: false })
       .range(from, from + PAGE_SIZE - 1)
     if (effectiveFilter !== ALL) query = query.eq('event_id', effectiveFilter)
+    if (effectiveStatus === 'used') query = query.not('used_at', 'is', null)
+    if (effectiveStatus === 'guest_in' || effectiveStatus === 'used_guest_pending') {
+      // Solo QR de eventos con invitados activados (igual que la card de Invitados)
+      query = query.in('event_id', guestEventIds.split(','))
+      query =
+        effectiveStatus === 'guest_in' ? query.not('guest_at', 'is', null) : query.is('guest_at', null)
+      if (effectiveStatus === 'used_guest_pending') query = query.not('used_at', 'is', null)
+    }
     if (debouncedSearch) {
       // name_search = nombre sin tildes (supabase/07_search.sql)
       const byName = `name_search.ilike.${ilikePattern(debouncedSearch)}`
@@ -107,7 +142,7 @@ export function ContadorPage() {
     }
     setTicketRows(data)
     setTicketTotal(count ?? 0)
-  }, [page, effectiveFilter, debouncedSearch])
+  }, [page, effectiveFilter, effectiveStatus, guestEventIds, debouncedSearch])
 
   // Siempre apunta a la última versión, para usarla desde Realtime
   const loadTicketsRef = useRef(loadTickets)
@@ -192,9 +227,13 @@ export function ContadorPage() {
 
   // Invitados: solo cuentan los eventos con invitados activados
   const withGuests = shown.filter((s) => s.guests_enabled)
+  // 1 invitado por QR: el total de invitados es el total de QR
+  const guestsTotal = withGuests.reduce((sum, s) => sum + s.total, 0)
   const guestsIn = withGuests.reduce((sum, s) => sum + s.guests, 0)
+  const guestsPending = guestsTotal - guestsIn
   // Titular ya ingresó y su invitado todavía no
-  const guestsPending = withGuests.reduce((sum, s) => sum + s.used, 0) - guestsIn
+  const guestsWaiting = withGuests.reduce((sum, s) => sum + s.used, 0) - guestsIn
+  const guestsPercent = guestsTotal > 0 ? Math.round((guestsIn / guestsTotal) * 100) : 0
 
   const columns: Column<TicketRow>[] = [
     {
@@ -303,49 +342,46 @@ export function ContadorPage() {
         </p>
       )}
 
-      {/* En tablet horizontal: escaneados a la izquierda, detalle a la derecha */}
-      <div className="flex flex-col gap-6 tablet-landscape:grid tablet-landscape:grid-cols-2">
-      {/* Número principal */}
-      <section className="rounded-2xl bg-surface p-6 text-center tablet-landscape:flex tablet-landscape:flex-col tablet-landscape:justify-center">
-        <p className="text-base font-medium uppercase tracking-wide text-foreground-soft tablet-landscape:text-lg">Escaneados</p>
-        <p className="text-8xl font-black tabular-nums text-primary tablet-landscape:text-9xl">{value(used)}</p>
-        <p className="mt-1 text-lg text-foreground-soft">de {value(total)} tickets emitidos</p>
+      {/* En tablet horizontal: escaneados a la izquierda, invitados a la derecha */}
+      <div
+        className={`flex flex-col gap-6 ${withGuests.length > 0 ? 'tablet-landscape:grid tablet-landscape:grid-cols-2' : ''}`}
+      >
+        <CountCard
+          title="Leyendas"
+          total={value(total)}
+          done={{ label: 'Escaneados', value: value(used), className: 'text-success' }}
+          pending={value(pending)}
+          percent={percent}
+          barClassName="bg-success"
+        />
 
-        <div className="mt-5 h-3 overflow-hidden rounded-full bg-background">
-          <div
-            className="h-full rounded-full bg-primary transition-all duration-500"
-            style={{ width: `${percent}%` }}
+        {/* Invitados (solo eventos con invitados activados) */}
+        {withGuests.length > 0 && (
+          <CountCard
+            title="Invitados"
+            total={value(guestsTotal)}
+            done={{ label: 'Ingresados', value: value(guestsIn), className: 'text-success' }}
+            pending={value(guestsPending)}
+            percent={guestsPercent}
+            barClassName="bg-success"
+            // Invitados pendientes cuyo titular (la leyenda) ya ingresó
+            footer={
+              <p className="mt-4 flex items-center justify-center gap-2 text-sm text-foreground-soft tablet-landscape:text-base">
+                <span className="text-2xl font-bold leading-none tabular-nums text-warning tablet-landscape:text-3xl">
+                  {value(guestsWaiting)}
+                </span>
+                <span>
+                  {guestsWaiting === 1 ? 'invitado' : 'invitados'}{' '}
+                  <strong className="font-bold text-foreground">
+                    {guestsWaiting === 1 ? 'pendiente' : 'pendientes'}
+                  </strong>{' '}
+                  con la leyenda dentro
+                </span>
+              </p>
+            }
           />
-        </div>
-        <p className="mt-2 text-base font-semibold text-muted tablet-landscape:text-lg">{percent}% ingresado</p>
-      </section>
-
-      {/* Detalle */}
-      <section className="grid grid-cols-2 gap-3 tablet-landscape:flex tablet-landscape:flex-col">
-        <div className="rounded-2xl bg-surface px-4 py-6 text-center tablet-landscape:flex tablet-landscape:flex-1 tablet-landscape:flex-col tablet-landscape:justify-center tablet-landscape:py-10">
-          <p className="text-base text-foreground-soft tablet-landscape:text-lg">Total emitidos</p>
-          <p className="text-4xl font-bold tabular-nums tablet-landscape:text-8xl">{value(total)}</p>
-        </div>
-        <div className="rounded-2xl bg-surface px-4 py-6 text-center tablet-landscape:flex tablet-landscape:flex-1 tablet-landscape:flex-col tablet-landscape:justify-center tablet-landscape:py-10">
-          <p className="text-base text-foreground-soft tablet-landscape:text-lg">Pendientes</p>
-          <p className="text-4xl font-bold tabular-nums text-warning tablet-landscape:text-8xl">{value(pending)}</p>
-        </div>
-      </section>
+        )}
       </div>
-
-      {/* Invitados (solo eventos con invitados activados) */}
-      {withGuests.length > 0 && (
-        <section className="flex items-center justify-between gap-4 rounded-2xl bg-surface px-5 py-6">
-          <div>
-            <p className="text-base text-foreground-soft tablet-landscape:text-lg">Invitados ingresados</p>
-            <p className="text-sm text-muted">
-              <span className="font-semibold text-warning">{value(guestsPending)}</span> pendientes de titulares
-              ya ingresados
-            </p>
-          </div>
-          <p className="text-4xl font-bold tabular-nums text-success tablet-landscape:text-6xl">{value(guestsIn)}</p>
-        </section>
-      )}
 
       {/* Desglose por evento (admin y dashboard, en "Todos los eventos") */}
       {canChooseEvent && filter === ALL && rows.length > 0 && (
@@ -389,6 +425,37 @@ export function ContadorPage() {
         <h2 className="text-sm font-semibold uppercase tracking-wide text-foreground-soft">
           {effectiveFilter === ALL ? 'Todos los QR' : `QR · ${eventName(effectiveFilter ?? '')}`}
         </h2>
+
+        {/* Filtros por status */}
+        <div className="flex flex-wrap gap-2" role="group" aria-label="Filtrar por status">
+          {statusOptions
+            .filter((o) => !o.guests || guestEventIds)
+            .map((o) => {
+              const selected = effectiveStatus === o.value
+              const count = {
+                all: total,
+                used,
+                guest_in: guestsIn,
+                used_guest_pending: guestsWaiting,
+              }[o.value]
+              return (
+                <button
+                  key={o.value}
+                  type="button"
+                  onClick={() => changeStatusFilter(o.value)}
+                  aria-pressed={selected}
+                  className={`rounded-full border px-3 py-1.5 text-sm font-semibold ${
+                    selected
+                      ? 'border-primary bg-primary text-on-primary'
+                      : 'border-line bg-surface text-foreground-soft hover:bg-surface-strong'
+                  }`}
+                >
+                  {o.label} <span className="tabular-nums opacity-75">{value(count)}</span>
+                </button>
+              )
+            })}
+        </div>
+
         <Table
           columns={columns}
           rows={ticketRows}
@@ -397,7 +464,9 @@ export function ContadorPage() {
           emptyMessage={
             debouncedSearch
               ? `Ningún nombre coincide con “${search.trim()}”.`
-              : 'Todavía no hay QR para este evento.'
+              : effectiveStatus === 'all'
+                ? 'Todavía no hay QR para este evento.'
+                : 'No hay QR con este status.'
           }
           pagination={{ page, pageSize: PAGE_SIZE, total: ticketTotal, onPageChange: setPage }}
         />
@@ -409,5 +478,52 @@ export function ContadorPage() {
         </p>
       )}
     </div>
+  )
+}
+
+interface CountCardProps {
+  title: string
+  total: number | string
+  /** Los que ya entraron (número de la izquierda) */
+  done: { label: string; value: number | string; className: string }
+  pending: number | string
+  percent: number
+  barClassName: string
+  footer?: ReactNode
+}
+
+/** Card de conteo: título con el total, ingresados | pendientes y barra de avance */
+function CountCard({ title, total, done, pending, percent, barClassName, footer }: CountCardProps) {
+  return (
+    <section className="flex flex-col justify-center rounded-2xl bg-surface px-5 py-6 text-center">
+      <p className="flex items-center justify-center gap-2 text-base font-medium uppercase tracking-wide text-foreground-soft tablet-landscape:text-lg">
+        {title}
+        <span className="rounded-full bg-surface-strong px-3 py-0.5 text-sm font-semibold normal-case tracking-normal text-foreground tablet-landscape:text-base">
+          Total {total}
+        </span>
+      </p>
+
+      <div className="mt-4 grid grid-cols-2 divide-x divide-line">
+        <div>
+          <p className="text-base text-foreground-soft tablet-landscape:text-lg">{done.label}</p>
+          <p className={`text-6xl font-black tabular-nums tablet-landscape:text-8xl ${done.className}`}>
+            {done.value}
+          </p>
+        </div>
+        <div>
+          <p className="text-base text-foreground-soft tablet-landscape:text-lg">Pendientes</p>
+          <p className="text-6xl font-black tabular-nums text-warning tablet-landscape:text-8xl">{pending}</p>
+        </div>
+      </div>
+
+      <div className="mt-5 h-3 overflow-hidden rounded-full bg-background">
+        <div
+          className={`h-full rounded-full transition-all duration-500 ${barClassName}`}
+          style={{ width: `${percent}%` }}
+        />
+      </div>
+      <p className="mt-2 text-base font-semibold text-muted tablet-landscape:text-lg">{percent}% ingresado</p>
+      {footer}
+    </section>
   )
 }
