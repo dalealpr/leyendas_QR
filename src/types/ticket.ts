@@ -55,6 +55,9 @@ export type DeleteEventTicketsResult =
   | { ok: true; deleted: number }
   | { ok: false; reason: 'password' }
 
+/** Respuesta de supabase.rpc('reset_event_status', { p_event_id, p_password }) */
+export type ResetEventStatusResult = { ok: true; reset: number } | { ok: false; reason: 'password' }
+
 /** Respuesta de supabase.rpc('set_ticket_status', { p_ticket_id, p_used, p_password }) */
 export type SetTicketStatusResult =
   | { ok: true; used_at: string | null }

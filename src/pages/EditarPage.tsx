@@ -10,6 +10,7 @@ import { ActiveEventDialog } from '../components/common/ActiveEventDialog'
 import { EventGuestsDialog } from '../components/common/EventGuestsDialog'
 import { SetGuestStatusDialog } from '../components/common/SetGuestStatusDialog'
 import { GuestBadge } from '../components/common/GuestBadge'
+import { ResetEventStatusDialog } from '../components/common/ResetEventStatusDialog'
 import type { Event, Ticket } from '../types/ticket'
 
 const PAGE_SIZE = 10
@@ -28,6 +29,7 @@ type PendingAction =
   | { type: 'status'; ticket: Ticket }
   | { type: 'delete'; ticket: Ticket }
   | { type: 'deleteAll' }
+  | { type: 'resetAll' }
   | { type: 'activate'; eventId: string | null }
   | { type: 'guests'; enable: boolean }
   | { type: 'guestStatus'; ticket: Ticket }
@@ -344,23 +346,62 @@ export function EditarPage() {
 
           {/* Zona de peligro */}
           {tickets.length > 0 && (
-            <section className="space-y-3 rounded-2xl border border-danger/40 p-4">
-              <div>
-                <h2 className="font-bold text-danger-soft">Zona de peligro</h2>
-                <p className="text-sm text-muted">
-                  Borra todos los QR de {eventName(eventId)}. El evento no se elimina.
-                </p>
+            <section className="space-y-4 rounded-2xl border border-danger/40 p-4">
+              <h2 className="font-bold text-danger-soft">Zona de peligro</h2>
+
+              {/* Reiniciar status */}
+              <div className="space-y-2">
+                <div>
+                  <h3 className="text-sm font-semibold text-warning">Reiniciar status</h3>
+                  <p className="text-sm text-muted">
+                    Deja todos los QR de {eventName(eventId)} como no escaneados
+                    {guestsEnabled && ' y sus invitados como pendientes'}. Los QR no se borran: úsalo para
+                    limpiar las pruebas antes de empezar a escanear.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setNotice(null)
+                    setPending({ type: 'resetAll' })
+                  }}
+                  disabled={usedCount === 0 && guestCount === 0}
+                  className="w-full rounded-lg bg-warning/15 py-3 text-sm font-semibold text-warning hover:bg-warning/25 disabled:opacity-40 disabled:hover:bg-warning/15"
+                >
+                  {usedCount === 0 && guestCount === 0
+                    ? 'Reiniciar status (no hay escaneados)'
+                    : `Reiniciar status (${usedCount} escaneados${guestCount > 0 ? ` · ${guestCount} invitados` : ''})`}
+                </button>
               </div>
-              <button
-                type="button"
-                onClick={() => {
-                  setNotice(null)
-                  setPending({ type: 'deleteAll' })
-                }}
-                className="w-full rounded-lg bg-danger/15 py-3 text-sm font-semibold text-danger-soft hover:bg-danger/25"
-              >
-                Eliminar todos los QR ({tickets.length})
-              </button>
+
+              <hr className="border-danger/20" />
+
+              {/* Eliminar todos: solo con el evento desactivado */}
+              {selectedIsActive ? (
+                <p className="text-sm text-muted">
+                  Para eliminar todos los QR, primero desactiva {eventName(eventId)}.
+                </p>
+              ) : (
+                <div className="space-y-2">
+                  <div>
+                    <h3 className="text-sm font-semibold text-danger-soft">Eliminar todos los QR</h3>
+                    <p className="text-sm text-muted">
+                      Borra todos los QR de {eventName(eventId)}: dejarán de servir en la entrada y habrá que
+                      generarlos de nuevo. El evento no se elimina.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setNotice(null)
+                      setPending({ type: 'deleteAll' })
+                    }}
+                    className="w-full rounded-lg bg-danger/15 py-3 text-sm font-semibold text-danger-soft hover:bg-danger/25"
+                  >
+                    Eliminar todos los QR ({tickets.length})
+                  </button>
+                </div>
+              )}
             </section>
           )}
         </>
@@ -436,6 +477,20 @@ export function EditarPage() {
           onDeleted={(id) => {
             setTickets((prev) => prev.filter((t) => t.id !== id))
             done(`Se eliminó el QR de ${pending.ticket.name || 'sin nombre'}.`)
+          }}
+        />
+      )}
+
+      {pending?.type === 'resetAll' && (
+        <ResetEventStatusDialog
+          eventId={eventId}
+          eventName={eventName(eventId)}
+          used={usedCount}
+          guests={guestCount}
+          onClose={() => setPending(null)}
+          onReset={(reset) => {
+            setTickets((prev) => prev.map((t) => ({ ...t, used_at: null, used_by: null, guest_at: null, guest_by: null })))
+            done(`Se reinició el status de ${reset} QR de ${eventName(eventId)}.`)
           }}
         />
       )}
