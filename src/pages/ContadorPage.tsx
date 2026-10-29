@@ -544,8 +544,8 @@ export function ContadorPage({ tableOnly = false }: ContadorPageProps) {
               barClassName="bg-success"
               // Invitados pendientes cuyo titular (la leyenda) ya ingresó
               footer={
-                <p className="mt-4 flex items-center justify-center gap-2 text-sm text-foreground-soft tablet-landscape:text-base">
-                  <span className="text-2xl font-bold leading-none tabular-nums text-warning tablet-landscape:text-3xl">
+                <p className="mt-6 flex items-center justify-center gap-2 border-t border-line pt-5 text-sm text-foreground-soft tablet-landscape:text-base">
+                  <span className="text-3xl font-semibold leading-none tabular-nums text-warning tablet-landscape:text-4xl">
                     {value(guestsWaiting)}
                   </span>
                   <span>
@@ -561,9 +561,9 @@ export function ContadorPage({ tableOnly = false }: ContadorPageProps) {
               extra={
                 stats &&
                 guestsDeclined > 0 && (
-                  <p className="mt-1 text-sm text-muted">
-                    {guestsDeclined} {guestsDeclined === 1 ? 'leyenda vino' : 'leyendas vinieron'} sin invitado (no
-                    cuentan en el total)
+                  <p className="mt-3 text-sm text-muted">
+                    <strong className="font-bold text-foreground">{guestsDeclined}</strong>{' '}
+                    {guestsDeclined === 1 ? 'leyenda vino' : 'leyendas vinieron'} sin invitado (no cuentan en el total)
                   </p>
                 )
               }
@@ -763,10 +763,11 @@ interface CountCardProps {
 /** Card de conteo: título con el total, ingresados | pendientes y barra de avance */
 function CountCard({ title, total, done, pending, percent, barClassName, footer, extra }: CountCardProps) {
   return (
-    <section className="flex flex-col justify-center rounded-2xl bg-surface px-5 py-6 text-center">
+    // Todo alineado arriba: en tablet las dos cards quedan con título, números y barra a la misma altura
+    <section className="flex flex-col justify-start rounded-2xl bg-surface px-5 py-8 text-center tablet-landscape:py-10">
       <p className="flex items-center justify-center gap-2 text-base font-medium uppercase tracking-wide text-foreground-soft tablet-landscape:text-lg">
         {title}
-        <span className="rounded-full bg-surface-strong px-3 py-0.5 text-sm font-semibold normal-case tracking-normal text-foreground tablet-landscape:text-base">
+        <span className="rounded-full bg-surface-strong px-3 py-0.5 text-base font-semibold normal-case tracking-normal text-foreground tablet-landscape:text-lg">
           Total {total}
         </span>
       </p>
@@ -774,13 +775,13 @@ function CountCard({ title, total, done, pending, percent, barClassName, footer,
       <div className="mt-4 grid grid-cols-2 divide-x divide-line">
         <div>
           <p className="text-base text-foreground-soft tablet-landscape:text-lg">{done.label}</p>
-          <p className={`text-6xl font-black tabular-nums tablet-landscape:text-8xl ${done.className}`}>
+          <p className={`text-7xl font-bold tabular-nums tablet-landscape:text-9xl ${done.className}`}>
             {done.value}
           </p>
         </div>
         <div>
           <p className="text-base text-foreground-soft tablet-landscape:text-lg">Pendientes</p>
-          <p className="text-6xl font-black tabular-nums text-warning tablet-landscape:text-8xl">{pending}</p>
+          <p className="text-7xl font-bold tabular-nums text-warning tablet-landscape:text-9xl">{pending}</p>
         </div>
       </div>
 
