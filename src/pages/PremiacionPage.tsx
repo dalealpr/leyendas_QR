@@ -4,6 +4,7 @@ import { Table, type Column } from '../components/ui/Table'
 import { SearchInput } from '../components/ui/SearchInput'
 import { YearsCell } from '../components/common/YearsCell'
 import { filterTickets } from '../utils/search'
+import { countClass } from '../utils/filterChip'
 import {
   YEARS_OPTIONS,
   ticketYears,
@@ -470,7 +471,7 @@ export function PremiacionPage() {
                   className={chipClass(awardFilter === o.value)}
                 >
                   {o.label}{' '}
-                  <span className="tabular-nums opacity-75">
+                  <span className={countClass(awardFilter === o.value)}>
                     {rows.filter((r) => matchesAward(r, o.value)).length}
                   </span>
                 </button>

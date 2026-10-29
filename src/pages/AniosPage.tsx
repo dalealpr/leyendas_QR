@@ -4,6 +4,7 @@ import { Table, type Column } from '../components/ui/Table'
 import { SearchInput } from '../components/ui/SearchInput'
 import { Modal } from '../components/ui/Modal'
 import { filterTickets } from '../utils/search'
+import { countClass } from '../utils/filterChip'
 import {
   YEARS_OPTIONS,
   ticketYears,
@@ -236,7 +237,7 @@ export function AniosPage() {
                     }`}
                   >
                     {o.label}{' '}
-                    <span className="tabular-nums opacity-75">
+                    <span className={countClass(yearsFilter === o.value)}>
                       {rows.filter((r) => matchesFilter(r, o.value)).length}
                     </span>
                   </button>

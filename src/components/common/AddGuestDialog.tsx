@@ -13,6 +13,7 @@ const errors: Record<Exclude<RegisterGuestFirstResult, { ok: true }>['reason'], 
   sin_invitados: 'Este evento no tiene invitados activados.',
   nombre_largo: `El nombre puede tener hasta ${MAX_NAME} caracteres.`,
   ya_ingresado: 'El invitado de esta leyenda ya ingresó.',
+  no_viene: 'Esta leyenda se registró sin invitado. Solo el admin puede cambiarlo desde Editar.',
 }
 
 interface Props {

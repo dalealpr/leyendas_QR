@@ -3,7 +3,7 @@ import { Scanner, type IDetectedBarcode, type IScannerError } from '@yudiel/reac
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/auth-context'
 import { useActiveEvent } from '../hooks/useActiveEvent'
-import type { RegisterGuestResult, ValidateTicketResult } from '../types/ticket'
+import type { DeclineGuestResult, RegisterGuestResult, ValidateTicketResult } from '../types/ticket'
 import { feedbackError, feedbackOk } from '../utils/feedback'
 
 /** Tiempo que se muestra el resultado antes de volver a escanear */
@@ -106,6 +106,22 @@ export function EscanearPage() {
     else showMessage(false, guestErrors[result.reason])
   }
 
+  /** "Sin invitado": su invitado no viene; el QR queda bloqueado para el invitado */
+  const declineGuest = async (code: string, name: string | null) => {
+    setGuestBusy(true)
+    const { data, error } = await supabase.rpc('decline_guest', { p_code: code })
+    setGuestBusy(false)
+    if (error) {
+      showMessage(false, 'ERROR', error.message)
+      return
+    }
+    const result = data as DeclineGuestResult
+    if (result.ok) showMessage(true, 'SIN INVITADO', name)
+    else if (result.reason === 'ya_ingresado')
+      showMessage(false, 'INVITADO YA INGRESÓ', `A las ${formatTime(result.guest_at)}`)
+    else showMessage(false, guestErrors[result.reason])
+  }
+
   const handleError = (err: IScannerError) => {
     setCameraError(cameraErrors[err.kind] ?? `Error de cámara: ${err.message}`)
   }
@@ -180,7 +196,8 @@ export function EscanearPage() {
           usedAt={screen.usedAt}
           busy={guestBusy}
           onYes={() => void registerGuest(screen.code)}
-          onNo={resume}
+          onLater={resume}
+          onDecline={() => void declineGuest(screen.code, screen.name)}
         />
       )}
     </div>
@@ -194,6 +211,7 @@ const guestErrors: Record<Exclude<RegisterGuestResult, { ok: true } | { reason: 
   sin_evento_activo: 'SIN EVENTO ACTIVO',
   sin_invitados: 'EVENTO SIN INVITADOS',
   titular_pendiente: 'TITULAR NO HA INGRESADO',
+  no_viene: 'REGISTRADO SIN INVITADO',
 }
 
 function describeScan(result: ValidateTicketResult): { ok: boolean; title: string; detail: string | null } {
@@ -205,7 +223,9 @@ function describeScan(result: ValidateTicketResult): { ok: boolean; title: strin
         title: 'YA USADO',
         detail: result.guest_at
           ? `Titular ${formatTime(result.used_at)} · Invitado ${formatTime(result.guest_at)}`
-          : `Usado a las ${formatTime(result.used_at)}`,
+          : result.guest_declined
+            ? `Titular ${formatTime(result.used_at)} · Vino sin invitado`
+            : `Usado a las ${formatTime(result.used_at)}`,
       }
     case 'invalido':
       return { ok: false, title: 'QR INVÁLIDO', detail: null }
@@ -225,12 +245,18 @@ interface GuestOverlayProps {
   entered: boolean
   usedAt: string | null
   busy: boolean
+  /** Con invitado / Sí, ingresa */
   onYes: () => void
-  onNo: () => void
+  /** Llega después / Cancelar: queda pendiente */
+  onLater: () => void
+  /** Sin invitado: no viene (solo al primer escaneo) */
+  onDecline: () => void
 }
 
 /** Pregunta si entra el invitado del QR */
-function GuestOverlay({ name, entered, usedAt, busy, onYes, onNo }: GuestOverlayProps) {
+function GuestOverlay({ name, entered, usedAt, busy, onYes, onLater, onDecline }: GuestOverlayProps) {
+  const outline =
+    'rounded-2xl border-2 border-white py-4 text-xl font-bold hover:bg-white/15 disabled:opacity-50'
   return (
     <div
       role="dialog"
@@ -250,25 +276,45 @@ function GuestOverlay({ name, entered, usedAt, busy, onYes, onNo }: GuestOverlay
       {!entered && usedAt && <span className="text-lg opacity-90">A las {formatTime(usedAt)}</span>}
 
       <p className="mt-4 text-2xl font-bold">{entered ? '¿Viene con invitado?' : '¿Ingresa el invitado?'}</p>
-      <div className="flex w-full max-w-sm gap-3">
-        <button
-          type="button"
-          onClick={onNo}
-          disabled={busy}
-          className="flex-1 rounded-2xl border-2 border-white py-5 text-xl font-bold hover:bg-white/15 disabled:opacity-50"
-        >
-          {entered ? 'Sin invitado' : 'Cancelar'}
-        </button>
-        <button
-          type="button"
-          onClick={onYes}
-          disabled={busy}
-          className="flex-1 rounded-2xl bg-white py-5 text-xl font-bold text-black hover:bg-white/90 disabled:opacity-50"
-        >
-          {busy ? 'Guardando…' : entered ? 'Con invitado' : 'Sí, ingresa'}
-        </button>
-      </div>
-      {entered && <span className="text-sm opacity-80">Si viene después, escanea este QR otra vez</span>}
+      {entered ? (
+        // Primer escaneo: 3 opciones
+        <div className="flex w-full max-w-sm flex-col gap-3">
+          <button
+            type="button"
+            onClick={onYes}
+            disabled={busy}
+            className="rounded-2xl bg-white py-4 text-xl font-bold text-black hover:bg-white/90 disabled:opacity-50"
+          >
+            {busy ? 'Guardando…' : 'Con invitado'}
+          </button>
+          <button type="button" onClick={onLater} disabled={busy} className={outline}>
+            Llega después
+          </button>
+          <button type="button" onClick={onDecline} disabled={busy} className={outline}>
+            Sin invitado
+          </button>
+        </div>
+      ) : (
+        // Re-escaneo con el invitado pendiente
+        <div className="flex w-full max-w-sm gap-3">
+          <button type="button" onClick={onLater} disabled={busy} className={`flex-1 ${outline}`}>
+            Cancelar
+          </button>
+          <button
+            type="button"
+            onClick={onYes}
+            disabled={busy}
+            className="flex-1 rounded-2xl bg-white py-4 text-xl font-bold text-black hover:bg-white/90 disabled:opacity-50"
+          >
+            {busy ? 'Guardando…' : 'Sí, ingresa'}
+          </button>
+        </div>
+      )}
+      {entered && (
+        <span className="text-sm opacity-80">
+          "Llega después": escanea este QR otra vez cuando llegue. "Sin invitado": ya no podrá entrar.
+        </span>
+      )}
     </div>
   )
 }

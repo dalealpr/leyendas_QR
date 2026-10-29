@@ -52,9 +52,31 @@ export type RegisterGuestFirstResult =
   | { ok: true; guest_at: string; guest_name: string | null }
   | {
       ok: false
-      reason: 'not_found' | 'otro_evento' | 'sin_evento_activo' | 'sin_invitados' | 'nombre_largo'
+      reason: 'not_found' | 'otro_evento' | 'sin_evento_activo' | 'sin_invitados' | 'nombre_largo' | 'no_viene'
     }
   | { ok: false; reason: 'ya_ingresado'; guest_at: string }
+
+/**
+ * Marca "Sin invitado" (no viene), en la tabla aparte public.ticket_guest_declined
+ * (ver supabase/18_guest_declined.sql). Se pide con select('..., ticket_guest_declined(declined_at)').
+ */
+export interface WithGuestDeclined {
+  ticket_guest_declined: { declined_at: string } | null
+}
+
+/** Respuesta de supabase.rpc('decline_guest', { p_code }) */
+export type DeclineGuestResult =
+  | { ok: true }
+  | { ok: false; reason: 'invalido' | 'otro_evento' | 'sin_evento_activo' | 'sin_invitados' | 'titular_pendiente' }
+  | { ok: false; reason: 'ya_ingresado'; guest_at: string }
+
+/** Estado del invitado: ingresado, pendiente (puede llegar) o no viene */
+export type GuestState = 'in' | 'pending' | 'declined'
+
+/** Respuesta de supabase.rpc('set_guest_state', { p_ticket_id, p_state, p_password }) */
+export type SetGuestStateResult =
+  | { ok: true; guest_at: string | null; declined: boolean }
+  | { ok: false; reason: 'password' | 'not_found' | 'invalid' }
 
 /**
  * Entrega del reconocimiento (trofeo + kit), en la tabla aparte public.ticket_awards (ver supabase/16_awards.sql).
@@ -106,6 +128,8 @@ export interface EventStats {
   guests: number
   /** Leyenda dentro y su invitado todavía no (ver supabase/15_guest_first.sql) */
   guests_waiting: number
+  /** Invitados que no vienen (escaneo "Sin invitado", ver supabase/18_guest_declined.sql) */
+  guests_declined: number
 }
 
 /** Respuesta de supabase.rpc('delete_ticket', { p_ticket_id, p_password }) */
@@ -144,7 +168,10 @@ export type SetActiveEventResult =
 /** Respuesta de supabase.rpc('register_guest', { p_code }) */
 export type RegisterGuestResult =
   | { ok: true; name: string | null }
-  | { ok: false; reason: 'invalido' | 'otro_evento' | 'sin_evento_activo' | 'sin_invitados' | 'titular_pendiente' }
+  | {
+      ok: false
+      reason: 'invalido' | 'otro_evento' | 'sin_evento_activo' | 'sin_invitados' | 'titular_pendiente' | 'no_viene'
+    }
   | { ok: false; reason: 'ya_ingresado'; guest_at: string }
 
 /** Respuesta de supabase.rpc('validate_ticket', { p_code }) */
@@ -161,7 +188,8 @@ export type ValidateTicketResult =
       guest_at?: string | null
       guest_name?: string | null
     }
-  | { ok: false; reason: 'ya_usado'; used_at: string; guest_at: string | null }
+  /** guest_declined = se escaneó "Sin invitado": el QR queda bloqueado */
+  | { ok: false; reason: 'ya_usado'; used_at: string; guest_at: string | null; guest_declined?: boolean }
   /** Titular ya ingresó y su invitado todavía no */
   | { ok: false; reason: 'invitado_pendiente'; name: string | null; used_at: string }
   | { ok: false; reason: 'invalido' }

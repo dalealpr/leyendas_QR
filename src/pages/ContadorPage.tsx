@@ -7,12 +7,14 @@ import { GuestBadge } from '../components/common/GuestBadge'
 import { YearsCell } from '../components/common/YearsCell'
 import { SearchInput } from '../components/ui/SearchInput'
 import { ilikePattern, normalize } from '../utils/search'
+import { countClass } from '../utils/filterChip'
 import { AddGuestDialog } from '../components/common/AddGuestDialog'
 import {
   YEARS_OPTIONS,
   type EventStats,
   type LeyendaYears,
   type Ticket,
+  type WithGuestDeclined,
   type WithGuestName,
   type WithYears,
 } from '../types/ticket'
@@ -27,10 +29,18 @@ const PAGE_SIZE = 10
 
 type TicketRow = Pick<Ticket, 'id' | 'name' | 'event_id' | 'used_at' | 'guest_at' | 'created_at'> &
   WithYears &
-  WithGuestName
+  WithGuestName &
+  WithGuestDeclined
 
 /** Filtro de la tabla por status */
-type StatusFilter = 'all' | 'used' | 'guest_in' | 'used_guest_pending' | 'unused_guest_in' | 'unused_no_guest'
+type StatusFilter =
+  | 'all'
+  | 'used'
+  | 'guest_in'
+  | 'used_guest_pending'
+  | 'unused_guest_in'
+  | 'unused_no_guest'
+  | 'guest_declined'
 
 type StatusOption = { value: StatusFilter; label: string; guests?: boolean }
 
@@ -43,6 +53,8 @@ const statusOptions: StatusOption[] = [
   { value: 'used_guest_pending', label: 'Escaneados · invitado pendiente', guests: true },
   // El invitado llegó primero y la leyenda todavía no se escanea
   { value: 'unused_guest_in', label: 'Sin escanear · invitado dentro', guests: true },
+  // Se escaneó "Sin invitado": su invitado no viene
+  { value: 'guest_declined', label: 'Sin invitado (no viene)', guests: true },
 ]
 
 /** Ventana Invitados (todas son leyendas sin escanear) */
@@ -50,6 +62,8 @@ const invitadosStatusOptions: StatusOption[] = [
   { value: 'all', label: 'Todos' },
   { value: 'unused_guest_in', label: 'Sin escanear · invitado dentro', guests: true },
   { value: 'unused_no_guest', label: 'Sin invitado agregado', guests: true },
+  // La leyenda ya entró y su invitado llega después
+  { value: 'used_guest_pending', label: 'Escaneados · invitado pendiente', guests: true },
 ]
 
 /** Filtro de la tabla por años de la leyenda */
@@ -200,21 +214,26 @@ export function ContadorPage({ tableOnly = false }: ContadorPageProps) {
     const yearsJoin = typeof yearsFilter === 'number' ? 'ticket_years!inner(years)' : 'ticket_years(years)'
     let query = supabase
       .from('tickets')
-      .select(`id, name, event_id, used_at, guest_at, created_at, ${yearsJoin}, ticket_guest_names(guest_name)`, {
-        count: 'exact',
-      })
+      .select(
+        `id, name, event_id, used_at, guest_at, created_at, ${yearsJoin}, ticket_guest_names(guest_name), ticket_guest_declined(declined_at)`,
+        { count: 'exact' },
+      )
       .order('created_at', { ascending: false })
       .range(from, from + PAGE_SIZE - 1)
     if (effectiveFilter !== ALL) query = query.eq('event_id', effectiveFilter)
     // Ventana Invitados: solo leyendas que todavía no se escanean
-    if (tableOnly) query = query.is('used_at', null)
+    // (salvo el filtro de escaneados cuyo invitado llega después)
+    if (tableOnly && effectiveStatus !== 'used_guest_pending') query = query.is('used_at', null)
     if (typeof yearsFilter === 'number') query = query.eq('ticket_years.years', yearsFilter)
     if (effectiveStatus === 'used') query = query.not('used_at', 'is', null)
     if (effectiveStatus !== 'all' && effectiveStatus !== 'used') {
       // Filtros de invitados: solo QR de eventos con invitados activados (igual que la card de Invitados)
       query = query.in('event_id', guestEventIds.split(','))
       if (effectiveStatus === 'guest_in') query = query.not('guest_at', 'is', null)
-      if (effectiveStatus === 'used_guest_pending') query = query.not('used_at', 'is', null).is('guest_at', null)
+      // Pendiente = todavía puede llegar: sin los que "no vienen"
+      if (effectiveStatus === 'used_guest_pending')
+        query = query.not('used_at', 'is', null).is('guest_at', null).is('ticket_guest_declined', null)
+      if (effectiveStatus === 'guest_declined') query = query.not('ticket_guest_declined', 'is', null)
       if (effectiveStatus === 'unused_guest_in') query = query.is('used_at', null).not('guest_at', 'is', null)
       if (effectiveStatus === 'unused_no_guest') query = query.is('used_at', null).is('guest_at', null)
     }
@@ -266,6 +285,7 @@ export function ContadorPage({ tableOnly = false }: ContadorPageProps) {
         used: Number(s.used),
         guests: Number(s.guests),
         guests_waiting: Number(s.guests_waiting),
+        guests_declined: Number(s.guests_declined),
       })),
     )
     setUpdatedAt(new Date())
@@ -324,16 +344,19 @@ export function ContadorPage({ tableOnly = false }: ContadorPageProps) {
 
   // Invitados: solo cuentan los eventos con invitados activados
   const withGuests = shown.filter((s) => s.guests_enabled)
-  // 1 invitado por QR: el total de invitados es el total de QR
-  const guestsTotal = withGuests.reduce((sum, s) => sum + s.total, 0)
+  // Invitados que no vienen (se escaneó "Sin invitado"): no cuentan en el total ni en pendientes
+  const guestsDeclined = withGuests.reduce((sum, s) => sum + s.guests_declined, 0)
+  // 1 invitado por QR: el total de invitados es el total de QR menos los que no vienen
+  const guestsTotal = withGuests.reduce((sum, s) => sum + s.total, 0) - guestsDeclined
   const guestsIn = withGuests.reduce((sum, s) => sum + s.guests, 0)
   const guestsPending = guestsTotal - guestsIn
-  // Titular ya ingresó y su invitado todavía no (contado en Supabase: hay invitados
-  // que entran antes que su leyenda, así que used - guests no sirve)
+  // Titular ya ingresó y su invitado todavía puede llegar (contado en Supabase: hay invitados
+  // que entran antes que su leyenda y otros que no vienen, así que used - guests no sirve)
   const guestsWaiting = withGuests.reduce((sum, s) => sum + s.guests_waiting, 0)
   // Invitado dentro y su leyenda todavía no:
-  // invitados ingresados − (leyendas dentro con invitado = leyendas dentro − las que esperan invitado)
-  const guestsFirst = guestsIn - (withGuests.reduce((sum, s) => sum + s.used, 0) - guestsWaiting)
+  // invitados ingresados − leyendas dentro con invitado (= dentro − esperando − no vienen)
+  const guestsFirst =
+    guestsIn - (withGuests.reduce((sum, s) => sum + s.used, 0) - guestsWaiting - guestsDeclined)
   // Leyenda sin escanear y sin invitado agregado (eventos con invitados)
   const unusedNoGuest = withGuests.reduce((sum, s) => sum + s.total - s.used, 0) - guestsFirst
   const guestsPercent = guestsTotal > 0 ? Math.round((guestsIn / guestsTotal) * 100) : 0
@@ -356,29 +379,24 @@ export function ContadorPage({ tableOnly = false }: ContadorPageProps) {
     ...(effectiveFilter === ALL
       ? [{ key: 'event', header: 'Evento', className: 'whitespace-nowrap', render: (t: TicketRow) => eventName(t.event_id) }]
       : []),
-    // En la ventana Invitados todas son "No escaneado" y su invitado "—": no hacen falta
-    ...(tableOnly
-      ? []
-      : [
-          {
-            key: 'status',
-            header: 'Status',
-            className: 'whitespace-nowrap',
-            render: (t: TicketRow) =>
-              t.used_at ? (
-                <span className="inline-flex flex-col">
-                  <span className="w-fit rounded-full bg-success/15 px-2 py-1 text-xs font-semibold text-success">
-                    Escaneado
-                  </span>
-                  <span className="mt-1 text-xs text-muted">{formatDate(t.used_at)}</span>
-                </span>
-              ) : (
-                <span className="rounded-full bg-surface-strong px-2 py-1 text-xs font-semibold text-foreground-soft">
-                  No escaneado
-                </span>
-              ),
-          },
-        ]),
+    {
+      key: 'status',
+      header: 'Status',
+      className: 'whitespace-nowrap',
+      render: (t: TicketRow) =>
+        t.used_at ? (
+          <span className="inline-flex flex-col">
+            <span className="w-fit rounded-full bg-success/15 px-2 py-1 text-xs font-semibold text-success">
+              Escaneado
+            </span>
+            <span className="mt-1 text-xs text-muted">{formatDate(t.used_at)}</span>
+          </span>
+        ) : (
+          <span className="rounded-full bg-surface-strong px-2 py-1 text-xs font-semibold text-foreground-soft">
+            No escaneado
+          </span>
+        ),
+    },
     // Ventana Invitados: registrar al invitado que llega antes que su leyenda
     ...(tableOnly && withGuests.length > 0
       ? [
@@ -388,6 +406,8 @@ export function ContadorPage({ tableOnly = false }: ContadorPageProps) {
             className: 'w-px whitespace-nowrap text-right',
             render: (t: TicketRow) => {
               if (!hasGuests(t.event_id)) return <span className="text-muted">—</span>
+              // Se escaneó "Sin invitado": bloqueado, solo el admin lo cambia en Editar
+              if (t.ticket_guest_declined && !t.guest_at) return <GuestBadge ticket={t} declined />
               if (t.guest_at) {
                 return (
                   <span className="inline-flex flex-col items-end">
@@ -424,7 +444,11 @@ export function ContadorPage({ tableOnly = false }: ContadorPageProps) {
             className: 'whitespace-nowrap',
             render: (t: TicketRow) =>
               hasGuests(t.event_id) ? (
-                <GuestBadge ticket={t} guestName={t.ticket_guest_names?.guest_name} />
+                <GuestBadge
+                  ticket={t}
+                  guestName={t.ticket_guest_names?.guest_name}
+                  declined={Boolean(t.ticket_guest_declined)}
+                />
               ) : null,
           },
         ]
@@ -533,6 +557,16 @@ export function ContadorPage({ tableOnly = false }: ContadorPageProps) {
                   </span>
                 </p>
               }
+              // Se escanearon "Sin invitado": ya descontados del total
+              extra={
+                stats &&
+                guestsDeclined > 0 && (
+                  <p className="mt-1 text-sm text-muted">
+                    {guestsDeclined} {guestsDeclined === 1 ? 'leyenda vino' : 'leyendas vinieron'} sin invitado (no
+                    cuentan en el total)
+                  </p>
+                )
+              }
             />
           )}
         </div>
@@ -581,9 +615,11 @@ export function ContadorPage({ tableOnly = false }: ContadorPageProps) {
           <h2 className="truncate text-sm font-semibold uppercase tracking-wide text-foreground-soft">
             {tableOnly ? (
               <>
-                Leyendas no escaneadas
+                {effectiveStatus === 'used_guest_pending' ? 'Escaneadas · invitado pendiente' : 'Leyendas no escaneadas'}
                 {effectiveFilter !== ALL && ` · ${eventName(effectiveFilter ?? '')}`}{' '}
-                <span className="text-warning tabular-nums">{value(pending)}</span>
+                <span className="text-warning tabular-nums">
+                  {value(effectiveStatus === 'used_guest_pending' ? guestsWaiting : pending)}
+                </span>
               </>
             ) : effectiveFilter === ALL ? (
               'Todos los QR'
@@ -592,7 +628,7 @@ export function ContadorPage({ tableOnly = false }: ContadorPageProps) {
             )}
           </h2>
           {/* Solo aparece si hay algún filtro o búsqueda puesta */}
-          {(search || effectiveStatus !== 'all' || (!tableOnly && yearsFilter !== 'all')) && (
+          {(search || effectiveStatus !== 'all' || yearsFilter !== 'all') && (
             <button
               type="button"
               onClick={() => {
@@ -623,6 +659,7 @@ export function ContadorPage({ tableOnly = false }: ContadorPageProps) {
                   used_guest_pending: guestsWaiting,
                   unused_guest_in: guestsFirst,
                   unused_no_guest: unusedNoGuest,
+                  guest_declined: guestsDeclined,
                 }[o.value]
                 return (
                   <button
@@ -636,7 +673,7 @@ export function ContadorPage({ tableOnly = false }: ContadorPageProps) {
                         : 'border-line bg-surface text-foreground-soft hover:bg-surface-strong'
                     }`}
                   >
-                    {o.label} <span className="tabular-nums opacity-75">{value(count)}</span>
+                    {o.label} <span className={countClass(selected)}>{value(count)}</span>
                   </button>
                 )
               })}
@@ -644,30 +681,31 @@ export function ContadorPage({ tableOnly = false }: ContadorPageProps) {
         )}
 
         {/* Filtros por años de la leyenda */}
-        {!tableOnly && (
-          <div className="flex flex-wrap gap-2" role="group" aria-label="Filtrar por años">
-            {yearsOptions.map((o) => {
-              const selected = yearsFilter === o.value
-              const count = o.value === 'all' ? total : (yearCounts?.[o.value] ?? 0)
-              return (
-                <button
-                  key={o.value}
-                  type="button"
-                  onClick={() => changeYearsFilter(o.value)}
-                  aria-pressed={selected}
-                  className={`rounded-full border px-3 py-1.5 text-sm font-semibold ${
-                    selected
-                      ? 'border-primary bg-primary text-on-primary'
-                      : 'border-line bg-surface text-foreground-soft hover:bg-surface-strong'
-                  }`}
-                >
-                  {o.label}{' '}
-                  <span className="tabular-nums opacity-75">{stats && yearCounts ? count : '–'}</span>
-                </button>
-              )
-            })}
-          </div>
-        )}
+        <div className="flex flex-wrap gap-2" role="group" aria-label="Filtrar por años">
+          {yearsOptions.map((o) => {
+            const selected = yearsFilter === o.value
+            const count = o.value === 'all' ? total : (yearCounts?.[o.value] ?? 0)
+            return (
+              <button
+                key={o.value}
+                type="button"
+                onClick={() => changeYearsFilter(o.value)}
+                aria-pressed={selected}
+                className={`rounded-full border px-3 py-1.5 text-sm font-semibold ${
+                  selected
+                    ? 'border-primary bg-primary text-on-primary'
+                    : 'border-line bg-surface text-foreground-soft hover:bg-surface-strong'
+                }`}
+              >
+                {o.label}{' '}
+                {/* En la ventana Invitados los totales por años no coinciden con la lista: sin número */}
+                {!tableOnly && (
+                  <span className={countClass(selected)}>{stats && yearCounts ? count : '–'}</span>
+                )}
+              </button>
+            )
+          })}
+        </div>
 
         <Table
           columns={columns}
@@ -718,10 +756,12 @@ interface CountCardProps {
   percent: number
   barClassName: string
   footer?: ReactNode
+  /** Nota chica debajo del footer */
+  extra?: ReactNode
 }
 
 /** Card de conteo: título con el total, ingresados | pendientes y barra de avance */
-function CountCard({ title, total, done, pending, percent, barClassName, footer }: CountCardProps) {
+function CountCard({ title, total, done, pending, percent, barClassName, footer, extra }: CountCardProps) {
   return (
     <section className="flex flex-col justify-center rounded-2xl bg-surface px-5 py-6 text-center">
       <p className="flex items-center justify-center gap-2 text-base font-medium uppercase tracking-wide text-foreground-soft tablet-landscape:text-lg">
@@ -752,6 +792,7 @@ function CountCard({ title, total, done, pending, percent, barClassName, footer 
       </div>
       <p className="mt-2 text-base font-semibold text-muted tablet-landscape:text-lg">{percent}% ingresado</p>
       {footer}
+      {extra}
     </section>
   )
 }

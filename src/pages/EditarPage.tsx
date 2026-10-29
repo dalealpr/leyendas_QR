@@ -8,14 +8,24 @@ import { DeleteEventTicketsDialog } from '../components/common/DeleteEventTicket
 import { SetTicketStatusDialog } from '../components/common/SetTicketStatusDialog'
 import { ActiveEventDialog } from '../components/common/ActiveEventDialog'
 import { EventGuestsDialog } from '../components/common/EventGuestsDialog'
-import { SetGuestStatusDialog } from '../components/common/SetGuestStatusDialog'
+import { SetGuestStateDialog } from '../components/common/SetGuestStateDialog'
 import { GuestBadge } from '../components/common/GuestBadge'
 import { ResetEventStatusDialog } from '../components/common/ResetEventStatusDialog'
 import { YearsCell } from '../components/common/YearsCell'
-import type { Event, Ticket as TicketBase, WithGuestName, WithYears } from '../types/ticket'
+import type {
+  Event,
+  GuestState,
+  Ticket as TicketBase,
+  WithGuestDeclined,
+  WithGuestName,
+  WithYears,
+} from '../types/ticket'
 
-/** Ticket con sus años y el nombre de su invitado (tablas aparte; solo lectura aquí) */
-type Ticket = TicketBase & WithYears & WithGuestName
+/** Ticket con sus años, el nombre de su invitado y la marca "no viene" (tablas aparte) */
+type Ticket = TicketBase & WithYears & WithGuestName & WithGuestDeclined
+
+/** Estado actual del invitado de un QR */
+const guestState = (t: Ticket): GuestState => (t.guest_at ? 'in' : t.ticket_guest_declined ? 'declined' : 'pending')
 
 const PAGE_SIZE = 10
 
@@ -58,7 +68,7 @@ export function EditarPage() {
     setLoading(true)
     const { data, error } = await supabase
       .from('tickets')
-      .select('*, ticket_years(years), ticket_guest_names(guest_name)')
+      .select('*, ticket_years(years), ticket_guest_names(guest_name), ticket_guest_declined(declined_at)')
       .eq('event_id', id)
       .order('created_at', { ascending: false })
       .returns<Ticket[]>()
@@ -166,10 +176,14 @@ export function EditarPage() {
                   setNotice(null)
                   setPending({ type: 'guestStatus', ticket: t })
                 }}
-                title={t.guest_at ? 'Marcar invitado como pendiente' : 'Marcar invitado como ingresado'}
+                title="Cambiar estado del invitado"
                 className="rounded-lg text-left hover:opacity-80"
               >
-                <GuestBadge ticket={t} guestName={t.ticket_guest_names?.guest_name} />
+                <GuestBadge
+                  ticket={t}
+                  guestName={t.ticket_guest_names?.guest_name}
+                  declined={Boolean(t.ticket_guest_declined)}
+                />
               </button>
             ),
           },
@@ -453,19 +467,30 @@ export function EditarPage() {
 
       {/* Modales con contraseña */}
       {pending?.type === 'guestStatus' && (
-        <SetGuestStatusDialog
-          ticket={pending.ticket}
+        <SetGuestStateDialog
+          ticketId={pending.ticket.id}
+          leyendaName={pending.ticket.name}
           eventName={eventName(eventId)}
+          current={guestState(pending.ticket)}
           onClose={() => setPending(null)}
-          onUpdated={(id, guestAt) => {
-            // Al dejarlo pendiente, Supabase también borra el nombre del invitado
+          onUpdated={(id, guestAt, declined) => {
+            // Si no quedó ingresado, Supabase también borra el nombre del invitado
             setTickets((prev) =>
               prev.map((t) =>
-                t.id === id ? { ...t, guest_at: guestAt, ...(guestAt ? {} : { ticket_guest_names: null }) } : t,
+                t.id === id
+                  ? {
+                      ...t,
+                      guest_at: guestAt,
+                      ticket_guest_declined: declined ? { declined_at: new Date().toISOString() } : null,
+                      ...(guestAt ? {} : { ticket_guest_names: null }),
+                    }
+                  : t,
               ),
             )
             done(
-              `Invitado de ${pending.ticket.name || 'QR sin nombre'} quedó como ${guestAt ? 'ingresado' : 'pendiente'}.`,
+              `Invitado de ${pending.ticket.name || 'QR sin nombre'} quedó como ${
+                guestAt ? 'ingresado' : declined ? 'no viene' : 'pendiente'
+              }.`,
             )
           }}
         />
@@ -481,7 +506,11 @@ export function EditarPage() {
             setTickets((prev) =>
               prev.map((t) =>
                 t.id === id
-                  ? { ...t, used_at: usedAt, ...(usedAt ? {} : { guest_at: null, ticket_guest_names: null }) }
+                  ? {
+                      ...t,
+                      used_at: usedAt,
+                      ...(usedAt ? {} : { guest_at: null, ticket_guest_names: null, ticket_guest_declined: null }),
+                    }
                   : t,
               ),
             )
@@ -520,6 +549,7 @@ export function EditarPage() {
                 guest_at: null,
                 guest_by: null,
                 ticket_guest_names: null,
+                ticket_guest_declined: null,
               })),
             )
             done(`Se reinició el status de ${reset} QR de ${eventName(eventId)}.`)
