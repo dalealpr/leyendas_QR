@@ -11,20 +11,24 @@ function formatDate(iso: string): string {
 
 interface Props {
   ticket: Pick<Ticket, 'used_at' | 'guest_at'>
+  /** Nombre del invitado, si se registró (ver supabase/15_guest_first.sql) */
+  guestName?: string | null
 }
 
 /**
  * Estado del invitado de un QR:
- * Ingresado (verde) · Pendiente (naranjo) · — si el titular todavía no entra
+ * Ingresado (verde, con nombre si lo tiene) · Pendiente (naranjo) · — si el titular todavía no entra.
+ * El invitado puede figurar como Ingresado aunque su leyenda no haya entrado (llegó primero).
  */
-export function GuestBadge({ ticket }: Props) {
+export function GuestBadge({ ticket, guestName }: Props) {
   if (ticket.guest_at) {
     return (
       <span className="inline-flex flex-col">
         <span className="w-fit rounded-full bg-success/15 px-2 py-1 text-xs font-semibold text-success">
           Ingresado
         </span>
-        <span className="mt-1 text-xs text-muted">{formatDate(ticket.guest_at)}</span>
+        {guestName && <span className="mt-1 max-w-40 truncate text-xs font-medium">{guestName}</span>}
+        <span className={`text-xs text-muted ${guestName ? '' : 'mt-1'}`}>{formatDate(ticket.guest_at)}</span>
       </span>
     )
   }

@@ -8,10 +8,13 @@ import { feedbackError, feedbackOk } from '../utils/feedback'
 
 /** Tiempo que se muestra el resultado antes de volver a escanear */
 const PAUSE_MS = 2000
+/** Igual, pero cuando el resultado trae un aviso extra que hay que leer */
+const NOTE_PAUSE_MS = 3500
 
 /** Lo que se muestra encima de la cámara */
 type Screen =
-  | { kind: 'message'; ok: boolean; title: string; detail: string | null }
+  /** note = aviso extra en una línea aparte (ej. "Su invitado ya ingresó") */
+  | { kind: 'message'; ok: boolean; title: string; detail: string | null; note?: string }
   /** Preguntar por el invitado. entered = el titular acaba de ingresar con este escaneo */
   | { kind: 'guest'; code: string; name: string | null; entered: boolean; usedAt: string | null }
 
@@ -47,11 +50,12 @@ export function EscanearPage() {
   }
 
   /** Muestra un resultado y vuelve a escanear solo después de PAUSE_MS */
-  const showMessage = (ok: boolean, title: string, detail: string | null = null) => {
+  const showMessage = (ok: boolean, title: string, detail: string | null = null, note?: string) => {
     if (ok) feedbackOk()
     else feedbackError()
-    setScreen({ kind: 'message', ok, title, detail })
-    timeoutRef.current = window.setTimeout(resume, PAUSE_MS)
+    setScreen({ kind: 'message', ok, title, detail, note })
+    // Con aviso extra se deja un poco más de tiempo para leerlo
+    timeoutRef.current = window.setTimeout(resume, note ? NOTE_PAUSE_MS : PAUSE_MS)
   }
 
   const handleScan = async (codes: IDetectedBarcode[]) => {
@@ -66,8 +70,16 @@ export function EscanearPage() {
     }
 
     const result = data as ValidateTicketResult
-    // Eventos con invitado: se pregunta y la pantalla espera la respuesta (sin tiempo límite)
-    if (result.ok && result.guests) {
+    // Su invitado llegó antes (ventana Invitados): no se pregunta, solo se avisa
+    if (result.ok && result.guests && result.guest_at) {
+      showMessage(
+        true,
+        'INGRESO OK',
+        result.name,
+        `Su invitado ya ingresó${result.guest_name ? `: ${result.guest_name}` : ''} · ${formatTime(result.guest_at)}`,
+      )
+    } else if (result.ok && result.guests) {
+      // Eventos con invitado: se pregunta y la pantalla espera la respuesta (sin tiempo límite)
       feedbackOk()
       setScreen({ kind: 'guest', code, name: result.name, entered: true, usedAt: null })
     } else if (!result.ok && result.reason === 'invitado_pendiente') {
@@ -153,7 +165,13 @@ export function EscanearPage() {
       )}
 
       {screen?.kind === 'message' && (
-        <ResultOverlay ok={screen.ok} title={screen.title} detail={screen.detail} onClose={resume} />
+        <ResultOverlay
+          ok={screen.ok}
+          title={screen.title}
+          detail={screen.detail}
+          note={screen.note}
+          onClose={resume}
+        />
       )}
       {screen?.kind === 'guest' && (
         <GuestOverlay
@@ -259,10 +277,11 @@ interface ResultOverlayProps {
   ok: boolean
   title: string
   detail: string | null
+  note?: string
   onClose: () => void
 }
 
-function ResultOverlay({ ok, title, detail, onClose }: ResultOverlayProps) {
+function ResultOverlay({ ok, title, detail, note, onClose }: ResultOverlayProps) {
   return (
     <button
       type="button"
@@ -276,6 +295,9 @@ function ResultOverlay({ ok, title, detail, onClose }: ResultOverlayProps) {
       </span>
       <span className="text-4xl font-black tracking-wide sm:text-5xl">{title}</span>
       {detail && <span className="text-2xl font-semibold">{detail}</span>}
+      {note && (
+        <span className="rounded-xl bg-black/25 px-4 py-3 text-lg font-semibold">{note}</span>
+      )}
       <span className="mt-6 text-sm opacity-80">Toca para seguir escaneando</span>
     </button>
   )

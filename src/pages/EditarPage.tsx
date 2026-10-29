@@ -11,7 +11,11 @@ import { EventGuestsDialog } from '../components/common/EventGuestsDialog'
 import { SetGuestStatusDialog } from '../components/common/SetGuestStatusDialog'
 import { GuestBadge } from '../components/common/GuestBadge'
 import { ResetEventStatusDialog } from '../components/common/ResetEventStatusDialog'
-import type { Event, Ticket } from '../types/ticket'
+import { YearsCell } from '../components/common/YearsCell'
+import type { Event, Ticket as TicketBase, WithGuestName, WithYears } from '../types/ticket'
+
+/** Ticket con sus años y el nombre de su invitado (tablas aparte; solo lectura aquí) */
+type Ticket = TicketBase & WithYears & WithGuestName
 
 const PAGE_SIZE = 10
 
@@ -66,7 +70,7 @@ export function EditarPage() {
     setLoading(true)
     const { data, error } = await supabase
       .from('tickets')
-      .select('*')
+      .select('*, ticket_years(years), ticket_guest_names(guest_name)')
       .eq('event_id', id)
       .order('created_at', { ascending: false })
       .returns<Ticket[]>()
@@ -118,6 +122,12 @@ export function EditarPage() {
       ),
     },
     {
+      key: 'years',
+      header: 'Años',
+      className: 'whitespace-nowrap',
+      render: (t) => <YearsCell row={t} />,
+    },
+    {
       key: 'status',
       header: 'Status',
       className: 'whitespace-nowrap',
@@ -135,29 +145,27 @@ export function EditarPage() {
           </span>
         ),
     },
-    // Invitado: solo en eventos con invitados activados. Se toca para cambiarlo.
+    // Invitado: solo en eventos con invitados activados. Se toca para cambiarlo
+    // (también si la leyenda no ha entrado: el invitado puede llegar primero).
     ...(guestsEnabled
       ? [
           {
             key: 'guest',
             header: 'Invitado',
             className: 'whitespace-nowrap',
-            render: (t: Ticket) =>
-              t.used_at ? (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setNotice(null)
-                    setPending({ type: 'guestStatus', ticket: t })
-                  }}
-                  title={t.guest_at ? 'Marcar invitado como pendiente' : 'Marcar invitado como ingresado'}
-                  className="rounded-full hover:opacity-80"
-                >
-                  <GuestBadge ticket={t} />
-                </button>
-              ) : (
-                <GuestBadge ticket={t} />
-              ),
+            render: (t: Ticket) => (
+              <button
+                type="button"
+                onClick={() => {
+                  setNotice(null)
+                  setPending({ type: 'guestStatus', ticket: t })
+                }}
+                title={t.guest_at ? 'Marcar invitado como pendiente' : 'Marcar invitado como ingresado'}
+                className="rounded-lg text-left hover:opacity-80"
+              >
+                <GuestBadge ticket={t} guestName={t.ticket_guest_names?.guest_name} />
+              </button>
+            ),
           },
         ]
       : []),
@@ -444,7 +452,12 @@ export function EditarPage() {
           eventName={eventName(eventId)}
           onClose={() => setPending(null)}
           onUpdated={(id, guestAt) => {
-            setTickets((prev) => prev.map((t) => (t.id === id ? { ...t, guest_at: guestAt } : t)))
+            // Al dejarlo pendiente, Supabase también borra el nombre del invitado
+            setTickets((prev) =>
+              prev.map((t) =>
+                t.id === id ? { ...t, guest_at: guestAt, ...(guestAt ? {} : { ticket_guest_names: null }) } : t,
+              ),
+            )
             done(
               `Invitado de ${pending.ticket.name || 'QR sin nombre'} quedó como ${guestAt ? 'ingresado' : 'pendiente'}.`,
             )
@@ -460,7 +473,11 @@ export function EditarPage() {
           onUpdated={(id, usedAt) => {
             // Al desmarcar, Supabase también borra el ingreso del invitado
             setTickets((prev) =>
-              prev.map((t) => (t.id === id ? { ...t, used_at: usedAt, ...(usedAt ? {} : { guest_at: null }) } : t)),
+              prev.map((t) =>
+                t.id === id
+                  ? { ...t, used_at: usedAt, ...(usedAt ? {} : { guest_at: null, ticket_guest_names: null }) }
+                  : t,
+              ),
             )
             done(
               `${pending.ticket.name || 'QR sin nombre'} quedó como ${usedAt ? 'escaneado' : 'no escaneado'}.`,
@@ -489,7 +506,16 @@ export function EditarPage() {
           guests={guestCount}
           onClose={() => setPending(null)}
           onReset={(reset) => {
-            setTickets((prev) => prev.map((t) => ({ ...t, used_at: null, used_by: null, guest_at: null, guest_by: null })))
+            setTickets((prev) =>
+              prev.map((t) => ({
+                ...t,
+                used_at: null,
+                used_by: null,
+                guest_at: null,
+                guest_by: null,
+                ticket_guest_names: null,
+              })),
+            )
             done(`Se reinició el status de ${reset} QR de ${eventName(eventId)}.`)
           }}
         />

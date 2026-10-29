@@ -27,6 +27,67 @@ export interface Ticket {
   created_at: string
 }
 
+/** Años posibles de una leyenda */
+export const YEARS_OPTIONS = [10, 15, 20, 25, 30, 35, 40, 45] as const
+export type LeyendaYears = (typeof YEARS_OPTIONS)[number]
+
+/**
+ * Años de la leyenda, en la tabla aparte public.ticket_years (ver supabase/14_years.sql).
+ * Se pide junto al ticket con select('..., ticket_years(years)'); null = sin asignar.
+ */
+export interface WithYears {
+  ticket_years: { years: LeyendaYears } | null
+}
+
+/**
+ * Nombre del invitado, en la tabla aparte public.ticket_guest_names (ver supabase/15_guest_first.sql).
+ * Se pide junto al ticket con select('..., ticket_guest_names(guest_name)'); null = sin nombre.
+ */
+export interface WithGuestName {
+  ticket_guest_names: { guest_name: string } | null
+}
+
+/** Respuesta de supabase.rpc('register_guest_first', { p_ticket_id, p_guest_name }) */
+export type RegisterGuestFirstResult =
+  | { ok: true; guest_at: string; guest_name: string | null }
+  | {
+      ok: false
+      reason: 'not_found' | 'otro_evento' | 'sin_evento_activo' | 'sin_invitados' | 'nombre_largo'
+    }
+  | { ok: false; reason: 'ya_ingresado'; guest_at: string }
+
+/**
+ * Entrega del reconocimiento (trofeo + kit), en la tabla aparte public.ticket_awards (ver supabase/16_awards.sql).
+ * Se pide junto al ticket con select('..., ticket_awards(delivered_at)'); null = sin entregar.
+ */
+export interface WithAward {
+  ticket_awards: { delivered_at: string } | null
+}
+
+/**
+ * Posición de llamado en la Premiación (dentro de su grupo de años), en la tabla aparte
+ * public.ticket_award_order (ver supabase/17_award_order.sql). null = sin posición (va por nombre).
+ */
+export interface WithAwardOrder {
+  ticket_award_order: { position: number } | null
+}
+
+/** Respuesta de supabase.rpc('set_award_order', { p_ticket_ids }) */
+export type SetAwardOrderResult = { ok: true; saved: number } | { ok: false; reason: 'not_found' }
+
+/** Respuesta de supabase.rpc('set_ticket_award', { p_ticket_id, p_delivered }) */
+export type SetTicketAwardResult = { ok: true; delivered_at: string | null } | { ok: false; reason: 'not_found' }
+
+/** Años de un ticket traído con ticket_years(years) */
+export function ticketYears(t: WithYears): LeyendaYears | null {
+  return t.ticket_years?.years ?? null
+}
+
+/** Respuesta de supabase.rpc('set_ticket_years', { p_ticket_id, p_years }) */
+export type SetTicketYearsResult =
+  | { ok: true; years: LeyendaYears | null }
+  | { ok: false; reason: 'invalid' | 'not_found' }
+
 /** Datos que se envían al crear un ticket (el resto lo pone la base de datos) */
 export interface NewTicket {
   name: string | null
@@ -43,6 +104,8 @@ export interface EventStats {
   used: number
   /** Invitados ingresados */
   guests: number
+  /** Leyenda dentro y su invitado todavía no (ver supabase/15_guest_first.sql) */
+  guests_waiting: number
 }
 
 /** Respuesta de supabase.rpc('delete_ticket', { p_ticket_id, p_password }) */
@@ -86,8 +149,18 @@ export type RegisterGuestResult =
 
 /** Respuesta de supabase.rpc('validate_ticket', { p_code }) */
 export type ValidateTicketResult =
-  /** guests = el evento lleva invitado: hay que preguntar si viene */
-  | { ok: true; name: string | null; event_name: string | null; guests: boolean }
+  /**
+   * guests = el evento lleva invitado: hay que preguntar si viene,
+   * salvo que su invitado ya haya entrado antes (guest_at, ver supabase/15_guest_first.sql)
+   */
+  | {
+      ok: true
+      name: string | null
+      event_name: string | null
+      guests: boolean
+      guest_at?: string | null
+      guest_name?: string | null
+    }
   | { ok: false; reason: 'ya_usado'; used_at: string; guest_at: string | null }
   /** Titular ya ingresó y su invitado todavía no */
   | { ok: false; reason: 'invitado_pendiente'; name: string | null; used_at: string }
