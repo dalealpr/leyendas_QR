@@ -369,6 +369,13 @@ export function ContadorPage({ tableOnly = false }: ContadorPageProps) {
   const unusedNoGuest = withGuests.reduce((sum, s) => sum + s.total - s.used, 0) - guestsFirst
   const guestsPercent = guestsTotal > 0 ? Math.round((guestsIn / guestsTotal) * 100) : 0
 
+  // Total asistentes: leyendas + invitados (sin contar a los invitados que no vienen)
+  const peopleTotal = total + guestsTotal
+  const peopleIn = used + guestsIn
+  const peoplePercent = peopleTotal > 0 ? Math.round((peopleIn / peopleTotal) * 100) : 0
+  // Ancho de cada tramo de la barra, sobre el total de asistentes
+  const share = (n: number) => (peopleTotal > 0 ? (n / peopleTotal) * 100 : 0)
+
   const columns: Column<TicketRow>[] = [
     {
       key: 'name',
@@ -578,6 +585,56 @@ export function ContadorPage({ tableOnly = false }: ContadorPageProps) {
             />
           )}
         </div>
+      )}
+
+      {/* Total asistentes (leyendas + invitados), a todo el ancho */}
+      {!tableOnly && withGuests.length > 0 && (
+        <section className="rounded-2xl bg-surface px-5 py-6 tablet-landscape:py-8">
+          <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+            <p className="flex items-center gap-2 text-base font-medium uppercase tracking-wide text-foreground-soft tablet-landscape:text-lg">
+              Total asistentes
+              <span className="rounded-full bg-surface-strong px-3 py-0.5 text-base font-semibold normal-case tracking-normal text-foreground tablet-landscape:text-lg">
+                Total {value(peopleTotal)}
+              </span>
+            </p>
+            <p className="tabular-nums">
+              <span className="text-4xl font-bold text-success tablet-landscape:text-5xl">{value(peopleIn)}</span>
+              <span className="text-lg text-muted"> / {value(peopleTotal)}</span>
+              <span className="ml-3 text-lg font-semibold text-foreground-soft">{peoplePercent}%</span>
+            </p>
+          </div>
+
+          {/* Barra: tramo de leyendas + tramo de invitados */}
+          <div
+            className="mt-4 flex h-5 overflow-hidden rounded-full bg-background"
+            role="img"
+            aria-label={`${peopleIn} de ${peopleTotal} asistentes ingresados`}
+          >
+            <div className="h-full bg-success transition-all duration-500" style={{ width: `${share(used)}%` }} />
+            <div className="h-full bg-primary transition-all duration-500" style={{ width: `${share(guestsIn)}%` }} />
+          </div>
+
+          <div className="mt-3 flex flex-wrap gap-x-5 gap-y-1 text-sm text-foreground-soft">
+            <span className="flex items-center gap-2">
+              <span className="h-3 w-3 rounded-full bg-success" aria-hidden="true" />
+              Leyendas <strong className="tabular-nums text-foreground">{value(used)}</strong>
+            </span>
+            <span className="flex items-center gap-2">
+              <span className="h-3 w-3 rounded-full bg-primary" aria-hidden="true" />
+              Invitados <strong className="tabular-nums text-foreground">{value(guestsIn)}</strong>
+            </span>
+            <span className="flex items-center gap-2">
+              <span className="h-3 w-3 rounded-full bg-background ring-1 ring-line" aria-hidden="true" />
+              Pendientes{' '}
+              <strong className="tabular-nums text-warning">{value(peopleTotal - peopleIn)}</strong>
+            </span>
+            {/* Solo informativo: no está en la barra ni en el total */}
+            <span className="flex items-center gap-2">
+              <span className="h-3 w-3 rounded-full border border-dashed border-muted" aria-hidden="true" />
+              Leyendas sin invitado <strong className="tabular-nums text-foreground">{value(guestsDeclined)}</strong>
+            </span>
+          </div>
+        </section>
       )}
 
       {/* Desglose por evento (admin y dashboard, en "Todos los eventos") */}

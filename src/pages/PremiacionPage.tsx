@@ -46,6 +46,18 @@ const awardOptions: { value: AwardFilter; label: string }[] = [
 const matchesAward = (row: AwardRow, filter: AwardFilter) =>
   filter === 'all' || (filter === 'delivered') === Boolean(row.ticket_awards)
 
+/** Filtro por presencia: si la leyenda ya fue escaneada en la entrada */
+type PresenceFilter = 'all' | 'present' | 'absent'
+
+const presenceOptions: { value: PresenceFilter; label: string }[] = [
+  { value: 'all', label: 'Todas' },
+  { value: 'present', label: 'Escaneadas (presentes)' },
+  { value: 'absent', label: 'Sin escanear (ausentes)' },
+]
+
+const matchesPresence = (row: AwardRow, filter: PresenceFilter) =>
+  filter === 'all' || (filter === 'present') === Boolean(row.used_at)
+
 function formatTime(iso: string): string {
   return new Date(iso).toLocaleTimeString('es', { hour: '2-digit', minute: '2-digit' })
 }
@@ -106,6 +118,7 @@ export function PremiacionPage() {
   const [error, setError] = useState<string | null>(null)
   const [search, setSearch] = useState('')
   const [awardFilter, setAwardFilter] = useState<AwardFilter>('all')
+  const [presenceFilter, setPresenceFilter] = useState<PresenceFilter>('all')
   // Filas que se están guardando (el interruptor queda bloqueado mientras tanto)
   const [saving, setSaving] = useState<Set<string>>(new Set())
   // Modo Ordenar: muestra flechas y el campo de posición
@@ -192,6 +205,7 @@ export function PremiacionPage() {
 
   const resetFilters = () => {
     setAwardFilter('all')
+    setPresenceFilter('all')
     setSearch('')
   }
 
@@ -229,13 +243,13 @@ export function PremiacionPage() {
 
   const deliveredCount = rows.filter((r) => r.ticket_awards).length
   const percent = rows.length > 0 ? Math.round((deliveredCount / rows.length) * 100) : 0
-  const hasFilters = awardFilter !== 'all' || search.trim() !== ''
+  const hasFilters = awardFilter !== 'all' || presenceFilter !== 'all' || search.trim() !== ''
 
   // Tabla agrupada por años; cada grupo muestra solo las filas que pasan los filtros
   const groups = GROUPS.map((years) => {
     const all = fullGroup(years)
     const visible = filterTickets(
-      all.filter((r) => matchesAward(r, awardFilter)),
+      all.filter((r) => matchesAward(r, awardFilter) && matchesPresence(r, presenceFilter)),
       search,
     )
     return { years, all, visible }
@@ -473,6 +487,26 @@ export function PremiacionPage() {
                   {o.label}{' '}
                   <span className={countClass(awardFilter === o.value)}>
                     {rows.filter((r) => matchesAward(r, o.value)).length}
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
+
+          {/* Filtros por presencia (escaneadas en la entrada o no) */}
+          {rows.length > 0 && (
+            <div className="flex flex-wrap gap-2" role="group" aria-label="Filtrar por presencia">
+              {presenceOptions.map((o) => (
+                <button
+                  key={o.value}
+                  type="button"
+                  onClick={() => setPresenceFilter(o.value)}
+                  aria-pressed={presenceFilter === o.value}
+                  className={chipClass(presenceFilter === o.value)}
+                >
+                  {o.label}{' '}
+                  <span className={countClass(presenceFilter === o.value)}>
+                    {rows.filter((r) => matchesPresence(r, o.value)).length}
                   </span>
                 </button>
               ))}
