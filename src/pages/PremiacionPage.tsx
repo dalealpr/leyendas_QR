@@ -416,6 +416,7 @@ export function PremiacionPage() {
                 style={{ width: `${percent}%` }}
               />
             </div>
+            <p className="mt-2 text-center text-base font-semibold text-muted">{percent}% entregado</p>
           </div>
         )}
 
