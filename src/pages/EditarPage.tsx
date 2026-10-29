@@ -49,18 +49,6 @@ export function EditarPage() {
   const [pending, setPending] = useState<PendingAction | null>(null)
   const [search, setSearch] = useState('')
 
-  useEffect(() => {
-    supabase
-      .from('events')
-      .select('*')
-      .order('sort_order')
-      .returns<Event[]>()
-      .then(({ data, error }) => {
-        if (error) setError(error.message)
-        else setEvents(data)
-      })
-  }, [])
-
   const eventName = (id: string) => events.find((e) => e.id === id)?.name ?? id
   const activeEvent = events.find((e) => e.is_active) ?? null
   const selectedIsActive = activeEvent?.id === eventId
@@ -88,6 +76,24 @@ export function EditarPage() {
     setSearch('')
     void loadTickets(id)
   }
+
+  // Al entrar: carga los eventos y arranca en el evento activo, si hay
+  useEffect(() => {
+    supabase
+      .from('events')
+      .select('*')
+      .order('sort_order')
+      .returns<Event[]>()
+      .then(({ data, error }) => {
+        if (error) setError(error.message)
+        else {
+          setEvents(data)
+          const active = data.find((e) => e.is_active)
+          if (active) changeEvent(active.id)
+        }
+      })
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- solo al entrar
+  }, [])
 
   const changeSearch = (value: string) => {
     setSearch(value)

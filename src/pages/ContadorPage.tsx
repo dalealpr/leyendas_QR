@@ -92,6 +92,16 @@ export function ContadorPage({ tableOnly = false }: ContadorPageProps) {
   // Evento activo (lo define el admin en Editar); se actualiza solo
   const { activeEvent, loaded: activeLoaded } = useActiveEvent()
 
+  // Admin y dashboard: al entrar, el selector arranca en el evento activo (una sola vez;
+  // después pueden elegir otro o "Todos los eventos")
+  const defaultApplied = useRef(false)
+  useEffect(() => {
+    if (!canChooseEvent || !activeLoaded || defaultApplied.current) return
+    defaultApplied.current = true
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- valor inicial del selector
+    if (activeEvent) setFilter(activeEvent.id)
+  }, [canChooseEvent, activeLoaded, activeEvent])
+
   /** Evento cuyos datos se muestran: el elegido, o el activo si no puede elegir */
   const effectiveFilter = canChooseEvent ? filter : (activeEvent?.id ?? null)
   const waitingActivation = !canChooseEvent && activeLoaded && !activeEvent

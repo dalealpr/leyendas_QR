@@ -58,7 +58,12 @@ export function GenerarPage() {
     ])
     const err = eventsRes.error ?? ticketsRes.error
     if (err) setError(err.message)
-    if (eventsRes.data) setEvents(eventsRes.data)
+    if (eventsRes.data) {
+      setEvents(eventsRes.data)
+      // Por defecto, el evento activo (si todavía no se eligió otro)
+      const active = eventsRes.data.find((e) => e.is_active)
+      if (active) setEventId((prev) => prev || active.id)
+    }
     if (ticketsRes.data) setTickets(ticketsRes.data)
     setListLoading(false)
   }, [])
