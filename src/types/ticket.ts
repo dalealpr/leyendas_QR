@@ -189,7 +189,15 @@ export type ValidateTicketResult =
       guest_name?: string | null
     }
   /** guest_declined = se escaneó "Sin invitado": el QR queda bloqueado */
-  | { ok: false; reason: 'ya_usado'; used_at: string; guest_at: string | null; guest_declined?: boolean }
+  | {
+      ok: false
+      reason: 'ya_usado'
+      /** Nombre de la leyenda (ver supabase/18_guest_declined.sql) */
+      name?: string | null
+      used_at: string
+      guest_at: string | null
+      guest_declined?: boolean
+    }
   /** Titular ya ingresó y su invitado todavía no */
   | { ok: false; reason: 'invitado_pendiente'; name: string | null; used_at: string }
   | { ok: false; reason: 'invalido' }

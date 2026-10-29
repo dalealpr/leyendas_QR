@@ -86,8 +86,8 @@ export function EscanearPage() {
       feedbackOk()
       setScreen({ kind: 'guest', code, name: result.name, entered: false, usedAt: result.used_at })
     } else {
-      const { ok, title, detail } = describeScan(result)
-      showMessage(ok, title, detail)
+      const { ok, title, detail, note } = describeScan(result)
+      showMessage(ok, title, detail, note)
     }
   }
 
@@ -214,19 +214,25 @@ const guestErrors: Record<Exclude<RegisterGuestResult, { ok: true } | { reason: 
   no_viene: 'REGISTRADO SIN INVITADO',
 }
 
-function describeScan(result: ValidateTicketResult): { ok: boolean; title: string; detail: string | null } {
+function describeScan(result: ValidateTicketResult): {
+  ok: boolean
+  title: string
+  detail: string | null
+  note?: string
+} {
   if (result.ok) return { ok: true, title: 'INGRESO OK', detail: result.name }
   switch (result.reason) {
-    case 'ya_usado':
-      return {
-        ok: false,
-        title: 'YA USADO',
-        detail: result.guest_at
-          ? `Titular ${formatTime(result.used_at)} · Invitado ${formatTime(result.guest_at)}`
-          : result.guest_declined
-            ? `Titular ${formatTime(result.used_at)} · Vino sin invitado`
-            : `Usado a las ${formatTime(result.used_at)}`,
-      }
+    case 'ya_usado': {
+      const times = result.guest_at
+        ? `Titular ${formatTime(result.used_at)} · Invitado ${formatTime(result.guest_at)}`
+        : result.guest_declined
+          ? `Titular ${formatTime(result.used_at)} · Vino sin invitado`
+          : `Usado a las ${formatTime(result.used_at)}`
+      // Con nombre: el nombre va grande y las horas en el recuadro de abajo
+      return result.name
+        ? { ok: false, title: 'YA USADO', detail: result.name, note: times }
+        : { ok: false, title: 'YA USADO', detail: times }
+    }
     case 'invalido':
       return { ok: false, title: 'QR INVÁLIDO', detail: null }
     case 'otro_evento':

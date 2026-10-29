@@ -100,6 +100,7 @@ grant execute on function public.decline_guest(text) to authenticated;
 -- ---------------------------------------------------------
 -- 3. validate_ticket (reemplaza la de 15_guest_first.sql)
 --    Re-escaneo de un QR marcado "Sin invitado" → YA USADO con guest_declined = true.
+--    YA USADO también devuelve el nombre de la leyenda (se muestra en la pantalla roja).
 -- ---------------------------------------------------------
 create or replace function public.validate_ticket(p_code text)
 returns json
@@ -179,6 +180,7 @@ begin
   return json_build_object(
     'ok', false,
     'reason', 'ya_usado',
+    'name', v_name,
     'used_at', v_used_at,
     'guest_at', v_guest_at,
     'guest_declined', v_declined
