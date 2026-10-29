@@ -1,6 +1,9 @@
 @import "tailwindcss";
 @import "./themes/theme.css";
 
+/* Tablet en horizontal: el min-height deja fuera a los celulares girados */
+@custom-variant tablet-landscape (@media (orientation: landscape) and (min-width: 900px) and (min-height: 600px));
+
 /* Colores base para todo lo que se dibuja fuera de la app (ej. modales en <body>) */
 body {
   background-color: var(--color-background);

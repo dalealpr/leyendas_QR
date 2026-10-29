@@ -3,6 +3,7 @@ import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/auth-context'
 import { useActiveEvent } from '../hooks/useActiveEvent'
 import { Table, type Column } from '../components/ui/Table'
+import { GuestBadge } from '../components/common/GuestBadge'
 import { SearchInput } from '../components/ui/SearchInput'
 import { ilikePattern, normalize } from '../utils/search'
 import type { EventStats, Ticket } from '../types/ticket'
@@ -15,7 +16,7 @@ const ALL = 'all'
 
 const PAGE_SIZE = 10
 
-type TicketRow = Pick<Ticket, 'id' | 'name' | 'event_id' | 'used_at' | 'created_at'>
+type TicketRow = Pick<Ticket, 'id' | 'name' | 'event_id' | 'used_at' | 'guest_at' | 'created_at'>
 
 function formatDate(iso: string): string {
   return new Date(iso).toLocaleString('es', {
@@ -84,7 +85,7 @@ export function ContadorPage() {
     const from = page * PAGE_SIZE
     let query = supabase
       .from('tickets')
-      .select('id, name, event_id, used_at, created_at', { count: 'exact' })
+      .select('id, name, event_id, used_at, guest_at, created_at', { count: 'exact' })
       .order('created_at', { ascending: false })
       .range(from, from + PAGE_SIZE - 1)
     if (effectiveFilter !== ALL) query = query.eq('event_id', effectiveFilter)
@@ -129,7 +130,14 @@ export function ContadorPage() {
       return
     }
     setError(null)
-    setStats((data as EventStats[]).map((s) => ({ ...s, total: Number(s.total), used: Number(s.used) })))
+    setStats(
+      (data as EventStats[]).map((s) => ({
+        ...s,
+        total: Number(s.total),
+        used: Number(s.used),
+        guests: Number(s.guests),
+      })),
+    )
     setUpdatedAt(new Date())
   }, [])
 
@@ -180,6 +188,13 @@ export function ContadorPage() {
   const value = (n: number) => (stats ? n : '–')
   const eventName = (id: string) => rows.find((s) => s.event_id === id)?.event_name ?? id
   const isActive = (id: string) => activeEvent?.id === id
+  const hasGuests = (id: string) => rows.find((s) => s.event_id === id)?.guests_enabled ?? false
+
+  // Invitados: solo cuentan los eventos con invitados activados
+  const withGuests = shown.filter((s) => s.guests_enabled)
+  const guestsIn = withGuests.reduce((sum, s) => sum + s.guests, 0)
+  // Titular ya ingresó y su invitado todavía no
+  const guestsPending = withGuests.reduce((sum, s) => sum + s.used, 0) - guestsIn
 
   const columns: Column<TicketRow>[] = [
     {
@@ -211,6 +226,17 @@ export function ContadorPage() {
           </span>
         ),
     },
+    // Invitado: solo si algún evento visible tiene invitados activados
+    ...(withGuests.length > 0
+      ? [
+          {
+            key: 'guest',
+            header: 'Invitado',
+            className: 'whitespace-nowrap',
+            render: (t: TicketRow) => (hasGuests(t.event_id) ? <GuestBadge ticket={t} /> : null),
+          },
+        ]
+      : []),
   ]
 
   const header = (
@@ -241,7 +267,7 @@ export function ContadorPage() {
   }
 
   return (
-    <div className="mx-auto flex w-full max-w-2xl flex-1 flex-col gap-6 p-4">
+    <div className="mx-auto flex w-full max-w-2xl flex-1 flex-col gap-6 p-4 tablet-landscape:max-w-5xl">
       {header}
 
       {canChooseEvent ? (
@@ -277,11 +303,13 @@ export function ContadorPage() {
         </p>
       )}
 
+      {/* En tablet horizontal: escaneados a la izquierda, detalle a la derecha */}
+      <div className="flex flex-col gap-6 tablet-landscape:grid tablet-landscape:grid-cols-2">
       {/* Número principal */}
-      <section className="rounded-2xl bg-surface p-6 text-center">
-        <p className="text-sm font-medium uppercase tracking-wide text-foreground-soft">Escaneados</p>
-        <p className="text-8xl font-black tabular-nums text-primary">{value(used)}</p>
-        <p className="mt-1 text-foreground-soft">de {value(total)} tickets emitidos</p>
+      <section className="rounded-2xl bg-surface p-6 text-center tablet-landscape:flex tablet-landscape:flex-col tablet-landscape:justify-center">
+        <p className="text-base font-medium uppercase tracking-wide text-foreground-soft tablet-landscape:text-lg">Escaneados</p>
+        <p className="text-8xl font-black tabular-nums text-primary tablet-landscape:text-9xl">{value(used)}</p>
+        <p className="mt-1 text-lg text-foreground-soft">de {value(total)} tickets emitidos</p>
 
         <div className="mt-5 h-3 overflow-hidden rounded-full bg-background">
           <div
@@ -289,20 +317,35 @@ export function ContadorPage() {
             style={{ width: `${percent}%` }}
           />
         </div>
-        <p className="mt-2 text-sm text-muted">{percent}% ingresado</p>
+        <p className="mt-2 text-base font-semibold text-muted tablet-landscape:text-lg">{percent}% ingresado</p>
       </section>
 
       {/* Detalle */}
-      <section className="grid grid-cols-2 gap-3">
-        <div className="rounded-2xl bg-surface p-4 text-center">
-          <p className="text-sm text-foreground-soft">Total emitidos</p>
-          <p className="text-4xl font-bold tabular-nums">{value(total)}</p>
+      <section className="grid grid-cols-2 gap-3 tablet-landscape:flex tablet-landscape:flex-col">
+        <div className="rounded-2xl bg-surface px-4 py-6 text-center tablet-landscape:flex tablet-landscape:flex-1 tablet-landscape:flex-col tablet-landscape:justify-center tablet-landscape:py-10">
+          <p className="text-base text-foreground-soft tablet-landscape:text-lg">Total emitidos</p>
+          <p className="text-4xl font-bold tabular-nums tablet-landscape:text-8xl">{value(total)}</p>
         </div>
-        <div className="rounded-2xl bg-surface p-4 text-center">
-          <p className="text-sm text-foreground-soft">Pendientes</p>
-          <p className="text-4xl font-bold tabular-nums">{value(pending)}</p>
+        <div className="rounded-2xl bg-surface px-4 py-6 text-center tablet-landscape:flex tablet-landscape:flex-1 tablet-landscape:flex-col tablet-landscape:justify-center tablet-landscape:py-10">
+          <p className="text-base text-foreground-soft tablet-landscape:text-lg">Pendientes</p>
+          <p className="text-4xl font-bold tabular-nums text-warning tablet-landscape:text-8xl">{value(pending)}</p>
         </div>
       </section>
+      </div>
+
+      {/* Invitados (solo eventos con invitados activados) */}
+      {withGuests.length > 0 && (
+        <section className="flex items-center justify-between gap-4 rounded-2xl bg-surface px-5 py-6">
+          <div>
+            <p className="text-base text-foreground-soft tablet-landscape:text-lg">Invitados ingresados</p>
+            <p className="text-sm text-muted">
+              <span className="font-semibold text-warning">{value(guestsPending)}</span> pendientes de titulares
+              ya ingresados
+            </p>
+          </div>
+          <p className="text-4xl font-bold tabular-nums text-success tablet-landscape:text-6xl">{value(guestsIn)}</p>
+        </section>
+      )}
 
       {/* Desglose por evento (admin y dashboard, en "Todos los eventos") */}
       {canChooseEvent && filter === ALL && rows.length > 0 && (

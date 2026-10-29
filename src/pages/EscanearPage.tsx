@@ -3,13 +3,17 @@ import { Scanner, type IDetectedBarcode, type IScannerError } from '@yudiel/reac
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/auth-context'
 import { useActiveEvent } from '../hooks/useActiveEvent'
-import type { ValidateTicketResult } from '../types/ticket'
+import type { RegisterGuestResult, ValidateTicketResult } from '../types/ticket'
 import { feedbackError, feedbackOk } from '../utils/feedback'
 
 /** Tiempo que se muestra el resultado antes de volver a escanear */
 const PAUSE_MS = 2000
 
-type ScanResult = ValidateTicketResult | { ok: false; reason: 'error'; message: string }
+/** Lo que se muestra encima de la cámara */
+type Screen =
+  | { kind: 'message'; ok: boolean; title: string; detail: string | null }
+  /** Preguntar por el invitado. entered = el titular acaba de ingresar con este escaneo */
+  | { kind: 'guest'; code: string; name: string | null; entered: boolean; usedAt: string | null }
 
 const cameraErrors: Partial<Record<IScannerError['kind'], string>> = {
   'permission-denied': 'No diste permiso para usar la cámara. Actívalo en la configuración del navegador.',
@@ -27,7 +31,8 @@ export function EscanearPage() {
   const isAdmin = role === 'admin'
   const { activeEvent, loaded } = useActiveEvent()
 
-  const [result, setResult] = useState<ScanResult | null>(null)
+  const [screen, setScreen] = useState<Screen | null>(null)
+  const [guestBusy, setGuestBusy] = useState(false)
   const [cameraError, setCameraError] = useState<string | null>(null)
   // Evita procesar dos lecturas a la vez (onScan puede llegar varias veces seguidas)
   const busyRef = useRef(false)
@@ -37,8 +42,16 @@ export function EscanearPage() {
 
   const resume = () => {
     window.clearTimeout(timeoutRef.current)
-    setResult(null)
+    setScreen(null)
     busyRef.current = false
+  }
+
+  /** Muestra un resultado y vuelve a escanear solo después de PAUSE_MS */
+  const showMessage = (ok: boolean, title: string, detail: string | null = null) => {
+    if (ok) feedbackOk()
+    else feedbackError()
+    setScreen({ kind: 'message', ok, title, detail })
+    timeoutRef.current = window.setTimeout(resume, PAUSE_MS)
   }
 
   const handleScan = async (codes: IDetectedBarcode[]) => {
@@ -47,16 +60,38 @@ export function EscanearPage() {
     busyRef.current = true
 
     const { data, error } = await supabase.rpc('validate_ticket', { p_code: code })
+    if (error) {
+      showMessage(false, 'ERROR', error.message)
+      return
+    }
 
-    const scan: ScanResult = error
-      ? { ok: false, reason: 'error', message: error.message }
-      : (data as ValidateTicketResult)
+    const result = data as ValidateTicketResult
+    // Eventos con invitado: se pregunta y la pantalla espera la respuesta (sin tiempo límite)
+    if (result.ok && result.guests) {
+      feedbackOk()
+      setScreen({ kind: 'guest', code, name: result.name, entered: true, usedAt: null })
+    } else if (!result.ok && result.reason === 'invitado_pendiente') {
+      feedbackOk()
+      setScreen({ kind: 'guest', code, name: result.name, entered: false, usedAt: result.used_at })
+    } else {
+      const { ok, title, detail } = describeScan(result)
+      showMessage(ok, title, detail)
+    }
+  }
 
-    if (scan.ok) feedbackOk()
-    else feedbackError()
-
-    setResult(scan)
-    timeoutRef.current = window.setTimeout(resume, PAUSE_MS)
+  const registerGuest = async (code: string) => {
+    setGuestBusy(true)
+    const { data, error } = await supabase.rpc('register_guest', { p_code: code })
+    setGuestBusy(false)
+    if (error) {
+      showMessage(false, 'ERROR', error.message)
+      return
+    }
+    const result = data as RegisterGuestResult
+    if (result.ok) showMessage(true, 'INVITADO OK', result.name ? `Invitado de ${result.name}` : null)
+    else if (result.reason === 'ya_ingresado')
+      showMessage(false, 'INVITADO YA INGRESÓ', `A las ${formatTime(result.guest_at)}`)
+    else showMessage(false, guestErrors[result.reason])
   }
 
   const handleError = (err: IScannerError) => {
@@ -85,7 +120,7 @@ export function EscanearPage() {
       <Scanner
         onScan={handleScan}
         onError={handleError}
-        paused={result !== null}
+        paused={screen !== null}
         formats={['qr_code']}
         constraints={{ facingMode: 'environment' }}
         allowMultiple
@@ -117,44 +152,127 @@ export function EscanearPage() {
         </div>
       )}
 
-      {result && <ResultOverlay result={result} onClose={resume} />}
+      {screen?.kind === 'message' && (
+        <ResultOverlay ok={screen.ok} title={screen.title} detail={screen.detail} onClose={resume} />
+      )}
+      {screen?.kind === 'guest' && (
+        <GuestOverlay
+          name={screen.name}
+          entered={screen.entered}
+          usedAt={screen.usedAt}
+          busy={guestBusy}
+          onYes={() => void registerGuest(screen.code)}
+          onNo={resume}
+        />
+      )}
     </div>
   )
 }
 
-function ResultOverlay({ result, onClose }: { result: ScanResult; onClose: () => void }) {
-  let title: string
-  let detail: string | null = null
+/** Mensajes de register_guest que no traen datos extra */
+const guestErrors: Record<Exclude<RegisterGuestResult, { ok: true } | { reason: 'ya_ingresado' }>['reason'], string> = {
+  invalido: 'QR INVÁLIDO',
+  otro_evento: 'OTRO EVENTO',
+  sin_evento_activo: 'SIN EVENTO ACTIVO',
+  sin_invitados: 'EVENTO SIN INVITADOS',
+  titular_pendiente: 'TITULAR NO HA INGRESADO',
+}
 
-  if (result.ok) {
-    title = 'INGRESO OK'
-    detail = result.name
-  } else if (result.reason === 'ya_usado') {
-    title = 'YA USADO'
-    detail = `Usado a las ${formatTime(result.used_at)}`
-  } else if (result.reason === 'invalido') {
-    title = 'QR INVÁLIDO'
-  } else if (result.reason === 'otro_evento') {
-    title = 'OTRO EVENTO'
-    detail = result.event_name ? `Este QR es de ${result.event_name}` : null
-  } else if (result.reason === 'sin_evento_activo') {
-    title = 'SIN EVENTO ACTIVO'
-    detail = 'Pide al admin que active el evento'
-  } else {
-    title = 'ERROR'
-    detail = result.message
+function describeScan(result: ValidateTicketResult): { ok: boolean; title: string; detail: string | null } {
+  if (result.ok) return { ok: true, title: 'INGRESO OK', detail: result.name }
+  switch (result.reason) {
+    case 'ya_usado':
+      return {
+        ok: false,
+        title: 'YA USADO',
+        detail: result.guest_at
+          ? `Titular ${formatTime(result.used_at)} · Invitado ${formatTime(result.guest_at)}`
+          : `Usado a las ${formatTime(result.used_at)}`,
+      }
+    case 'invalido':
+      return { ok: false, title: 'QR INVÁLIDO', detail: null }
+    case 'otro_evento':
+      return { ok: false, title: 'OTRO EVENTO', detail: result.event_name ? `Este QR es de ${result.event_name}` : null }
+    case 'sin_evento_activo':
+      return { ok: false, title: 'SIN EVENTO ACTIVO', detail: 'Pide al admin que active el evento' }
+    case 'invitado_pendiente':
+      // La pantalla de invitado se encarga de este caso; aquí solo por completitud
+      return { ok: false, title: 'INVITADO PENDIENTE', detail: result.name }
   }
+}
 
+interface GuestOverlayProps {
+  name: string | null
+  /** true = el titular acaba de ingresar; false = ya había ingresado antes */
+  entered: boolean
+  usedAt: string | null
+  busy: boolean
+  onYes: () => void
+  onNo: () => void
+}
+
+/** Pregunta si entra el invitado del QR */
+function GuestOverlay({ name, entered, usedAt, busy, onYes, onNo }: GuestOverlayProps) {
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label={entered ? '¿Viene con invitado?' : '¿Ingresa el invitado?'}
+      className={`absolute inset-0 flex flex-col items-center justify-center gap-4 p-6 text-center text-white ${
+        entered ? 'bg-success' : 'bg-warning'
+      }`}
+    >
+      <span className="text-6xl" aria-hidden="true">
+        {entered ? '✓' : '⏳'}
+      </span>
+      <span className="text-4xl font-black tracking-wide sm:text-5xl">
+        {entered ? 'INGRESO OK' : 'TITULAR YA INGRESÓ'}
+      </span>
+      {name && <span className="text-2xl font-semibold">{name}</span>}
+      {!entered && usedAt && <span className="text-lg opacity-90">A las {formatTime(usedAt)}</span>}
+
+      <p className="mt-4 text-2xl font-bold">{entered ? '¿Viene con invitado?' : '¿Ingresa el invitado?'}</p>
+      <div className="flex w-full max-w-sm gap-3">
+        <button
+          type="button"
+          onClick={onNo}
+          disabled={busy}
+          className="flex-1 rounded-2xl border-2 border-white py-5 text-xl font-bold hover:bg-white/15 disabled:opacity-50"
+        >
+          {entered ? 'Sin invitado' : 'Cancelar'}
+        </button>
+        <button
+          type="button"
+          onClick={onYes}
+          disabled={busy}
+          className="flex-1 rounded-2xl bg-white py-5 text-xl font-bold text-black hover:bg-white/90 disabled:opacity-50"
+        >
+          {busy ? 'Guardando…' : entered ? 'Con invitado' : 'Sí, ingresa'}
+        </button>
+      </div>
+      {entered && <span className="text-sm opacity-80">Si viene después, escanea este QR otra vez</span>}
+    </div>
+  )
+}
+
+interface ResultOverlayProps {
+  ok: boolean
+  title: string
+  detail: string | null
+  onClose: () => void
+}
+
+function ResultOverlay({ ok, title, detail, onClose }: ResultOverlayProps) {
   return (
     <button
       type="button"
       onClick={onClose}
       className={`absolute inset-0 flex flex-col items-center justify-center gap-4 p-6 text-center text-white ${
-        result.ok ? 'bg-success' : 'bg-danger'
+        ok ? 'bg-success' : 'bg-danger'
       }`}
     >
       <span className="text-7xl" aria-hidden="true">
-        {result.ok ? '✓' : '✕'}
+        {ok ? '✓' : '✕'}
       </span>
       <span className="text-4xl font-black tracking-wide sm:text-5xl">{title}</span>
       {detail && <span className="text-2xl font-semibold">{detail}</span>}

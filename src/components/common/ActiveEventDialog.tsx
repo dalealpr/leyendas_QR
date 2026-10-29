@@ -1,6 +1,8 @@
-import { useState } from 'react'
+import { useId, useState, type FormEvent } from 'react'
 import { supabase } from '../../lib/supabase'
 import { Modal } from '../ui/Modal'
+import { PasswordInput } from '../ui/PasswordInput'
+import type { SetActiveEventResult } from '../../types/ticket'
 
 interface Props {
   /** Evento a activar, o null para desactivar todos */
@@ -12,23 +14,28 @@ interface Props {
   onDone: (activeEventId: string | null) => void
 }
 
-/** Confirma activar / desactivar el evento activo (solo admin) */
+/** Confirma activar / desactivar el evento activo (solo admin, con contraseña) */
 export function ActiveEventDialog({ eventId, eventName, currentActiveName, onClose, onDone }: Props) {
+  const formId = useId()
+  const [password, setPassword] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const activating = eventId !== null
 
-  const handleConfirm = async () => {
+  const handleSubmit = async (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault()
     setError(null)
     setBusy(true)
-    const { data, error } = await supabase.rpc('set_active_event', { p_event_id: eventId })
+    const { data, error } = await supabase.rpc('set_active_event', { p_event_id: eventId, p_password: password })
     setBusy(false)
     if (error) {
       setError(error.message)
       return
     }
-    if (!(data as { ok: boolean }).ok) {
-      setError('Ese evento no existe.')
+    const result = data as SetActiveEventResult
+    if (!result.ok) {
+      setPassword('')
+      setError(result.reason === 'password' ? 'Contraseña incorrecta. No se cambió nada.' : 'Ese evento no existe.')
       return
     }
     onDone(eventId)
@@ -50,9 +57,9 @@ export function ActiveEventDialog({ eventId, eventName, currentActiveName, onClo
             Cancelar
           </button>
           <button
-            type="button"
-            onClick={handleConfirm}
-            disabled={busy}
+            type="submit"
+            form={formId}
+            disabled={busy || !password}
             className={`flex-1 rounded-lg py-3 font-semibold disabled:opacity-50 ${
               activating
                 ? 'bg-primary text-on-primary hover:bg-primary-hover'
@@ -64,7 +71,7 @@ export function ActiveEventDialog({ eventId, eventName, currentActiveName, onClo
         </>
       }
     >
-      <div className="space-y-3 text-sm text-foreground-soft">
+      <form id={formId} onSubmit={handleSubmit} className="space-y-3 text-sm text-foreground-soft">
         {activating ? (
           <>
             <p>
@@ -84,12 +91,18 @@ export function ActiveEventDialog({ eventId, eventName, currentActiveName, onClo
           </p>
         )}
         <p className="text-xs text-muted">Admin y dashboard siguen viendo todos los eventos.</p>
+
+        <label className="block">
+          <span className="mb-1 block text-sm font-medium text-foreground-soft">Contraseña del admin</span>
+          <PasswordInput value={password} onChange={setPassword} autoFocus />
+        </label>
+
         {error && (
           <p role="alert" className="text-danger-soft">
             {error}
           </p>
         )}
-      </div>
+      </form>
     </Modal>
   )
 }

@@ -7,6 +7,9 @@ import { DeleteTicketDialog } from '../components/common/DeleteTicketDialog'
 import { DeleteEventTicketsDialog } from '../components/common/DeleteEventTicketsDialog'
 import { SetTicketStatusDialog } from '../components/common/SetTicketStatusDialog'
 import { ActiveEventDialog } from '../components/common/ActiveEventDialog'
+import { EventGuestsDialog } from '../components/common/EventGuestsDialog'
+import { SetGuestStatusDialog } from '../components/common/SetGuestStatusDialog'
+import { GuestBadge } from '../components/common/GuestBadge'
 import type { Event, Ticket } from '../types/ticket'
 
 const PAGE_SIZE = 10
@@ -26,6 +29,8 @@ type PendingAction =
   | { type: 'delete'; ticket: Ticket }
   | { type: 'deleteAll' }
   | { type: 'activate'; eventId: string | null }
+  | { type: 'guests'; enable: boolean }
+  | { type: 'guestStatus'; ticket: Ticket }
 
 export function EditarPage() {
   const [events, setEvents] = useState<Event[]>([])
@@ -53,6 +58,7 @@ export function EditarPage() {
   const eventName = (id: string) => events.find((e) => e.id === id)?.name ?? id
   const activeEvent = events.find((e) => e.is_active) ?? null
   const selectedIsActive = activeEvent?.id === eventId
+  const guestsEnabled = events.find((e) => e.id === eventId)?.guests_enabled ?? false
 
   const loadTickets = async (id: string) => {
     setLoading(true)
@@ -91,6 +97,7 @@ export function EditarPage() {
   const currentPage = Math.min(page, pageCount - 1)
   const pageRows = filtered.slice(currentPage * PAGE_SIZE, (currentPage + 1) * PAGE_SIZE)
   const usedCount = tickets.filter((t) => t.used_at).length
+  const guestCount = tickets.filter((t) => t.guest_at).length
 
   const done = (message: string) => {
     setPending(null)
@@ -126,6 +133,32 @@ export function EditarPage() {
           </span>
         ),
     },
+    // Invitado: solo en eventos con invitados activados. Se toca para cambiarlo.
+    ...(guestsEnabled
+      ? [
+          {
+            key: 'guest',
+            header: 'Invitado',
+            className: 'whitespace-nowrap',
+            render: (t: Ticket) =>
+              t.used_at ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setNotice(null)
+                    setPending({ type: 'guestStatus', ticket: t })
+                  }}
+                  title={t.guest_at ? 'Marcar invitado como pendiente' : 'Marcar invitado como ingresado'}
+                  className="rounded-full hover:opacity-80"
+                >
+                  <GuestBadge ticket={t} />
+                </button>
+              ) : (
+                <GuestBadge ticket={t} />
+              ),
+          },
+        ]
+      : []),
     {
       key: 'actions',
       header: <span className="sr-only">Acciones</span>,
@@ -230,6 +263,39 @@ export function EditarPage() {
               </button>
             ))}
         </div>
+
+        {/* Invitados del evento elegido: 1 por QR */}
+        {eventId && (
+          <div className="flex items-center justify-between gap-3 rounded-lg bg-background px-3 py-3">
+            <div className="flex min-w-0 items-center gap-2">
+              <span
+                className={`h-2.5 w-2.5 shrink-0 rounded-full ${guestsEnabled ? 'bg-success' : 'bg-surface-hover'}`}
+                aria-hidden="true"
+              />
+              <p className="truncate text-sm">
+                <span className="text-muted">Invitados: </span>
+                <strong>{guestsEnabled ? 'activados' : 'desactivados'}</strong>
+              </p>
+            </div>
+            {guestsEnabled ? (
+              <button
+                type="button"
+                onClick={() => setPending({ type: 'guests', enable: false })}
+                className="shrink-0 rounded-lg border border-danger px-3 py-2 text-xs font-semibold text-danger-soft hover:bg-danger/15"
+              >
+                Desactivar invitados
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setPending({ type: 'guests', enable: true })}
+                className="shrink-0 rounded-lg bg-primary px-3 py-2 text-xs font-semibold text-on-primary hover:bg-primary-hover"
+              >
+                Activar invitados
+              </button>
+            )}
+          </div>
+        )}
         {error && (
           <p role="alert" className="rounded-lg bg-danger/15 px-3 py-2 text-sm text-danger-soft">
             {error}
@@ -246,6 +312,7 @@ export function EditarPage() {
               <h2 className="truncate text-lg font-bold">QR · {eventName(eventId)}</h2>
               <span className="shrink-0 text-sm text-muted">
                 {usedCount} escaneados / {tickets.length}
+                {guestsEnabled && ` · ${guestCount} invitados`}
               </span>
             </div>
 
@@ -316,14 +383,44 @@ export function EditarPage() {
         />
       )}
 
+      {pending?.type === 'guests' && (
+        <EventGuestsDialog
+          eventId={eventId}
+          eventName={eventName(eventId)}
+          enable={pending.enable}
+          onClose={() => setPending(null)}
+          onDone={(enabled) => {
+            setEvents((prev) => prev.map((ev) => (ev.id === eventId ? { ...ev, guests_enabled: enabled } : ev)))
+            done(`Invitados ${enabled ? 'activados' : 'desactivados'} en ${eventName(eventId)}.`)
+          }}
+        />
+      )}
+
       {/* Modales con contraseña */}
+      {pending?.type === 'guestStatus' && (
+        <SetGuestStatusDialog
+          ticket={pending.ticket}
+          eventName={eventName(eventId)}
+          onClose={() => setPending(null)}
+          onUpdated={(id, guestAt) => {
+            setTickets((prev) => prev.map((t) => (t.id === id ? { ...t, guest_at: guestAt } : t)))
+            done(
+              `Invitado de ${pending.ticket.name || 'QR sin nombre'} quedó como ${guestAt ? 'ingresado' : 'pendiente'}.`,
+            )
+          }}
+        />
+      )}
+
       {pending?.type === 'status' && (
         <SetTicketStatusDialog
           ticket={pending.ticket}
           eventName={eventName(eventId)}
           onClose={() => setPending(null)}
           onUpdated={(id, usedAt) => {
-            setTickets((prev) => prev.map((t) => (t.id === id ? { ...t, used_at: usedAt } : t)))
+            // Al desmarcar, Supabase también borra el ingreso del invitado
+            setTickets((prev) =>
+              prev.map((t) => (t.id === id ? { ...t, used_at: usedAt, ...(usedAt ? {} : { guest_at: null }) } : t)),
+            )
             done(
               `${pending.ticket.name || 'QR sin nombre'} quedó como ${usedAt ? 'escaneado' : 'no escaneado'}.`,
             )

@@ -75,6 +75,8 @@ create policy "tickets_select_staff"
 -- ---------------------------------------------------------
 -- 4. Activar / desactivar (solo admin)
 --    p_event_id = null → ningún evento activo
+--    ⚠ Reemplazada en 12_toggle_password.sql (con contraseña).
+--      Si vuelves a ejecutar este archivo, ejecuta después el 12.
 -- ---------------------------------------------------------
 create or replace function public.set_active_event(p_event_id text)
 returns json

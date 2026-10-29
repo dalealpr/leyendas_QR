@@ -30,4 +30,5 @@
   --color-danger: #ef4444;          /* errores, QR inválido / ya usado */
   --color-danger-soft: #fca5a5;     /* texto de mensajes de error */
   --color-success: #22c55e;         /* ingreso OK */
+  --color-warning: #f97316;         /* pendientes en Contador */
 }
