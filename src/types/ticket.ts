@@ -100,6 +100,14 @@ export type SetAwardOrderResult = { ok: true; saved: number } | { ok: false; rea
 /** Respuesta de supabase.rpc('set_ticket_award', { p_ticket_id, p_delivered }) */
 export type SetTicketAwardResult = { ok: true; delivered_at: string | null } | { ok: false; reason: 'not_found' }
 
+/**
+ * Marca de líder, en la tabla aparte public.ticket_leaders (ver supabase/21_leaders.sql).
+ * Se pide con select('..., ticket_leaders(created_at)'); null = no es líder.
+ */
+export interface WithLeader {
+  ticket_leaders: { created_at: string } | null
+}
+
 /** Años de un ticket traído con ticket_years(years) */
 export function ticketYears(t: WithYears): LeyendaYears | null {
   return t.ticket_years?.years ?? null

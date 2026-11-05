@@ -4,7 +4,9 @@ import { Table, type Column } from '../components/ui/Table'
 import { SearchInput } from '../components/ui/SearchInput'
 import { filterTickets } from '../utils/search'
 import { countClass } from '../utils/filterChip'
-import { extraErrors, type ExtraResult } from '../types/extraLists'
+import { extraErrors, type ExtraGuestStatus, type ExtraResult } from '../types/extraLists'
+import { ExtraGuestCell } from '../components/common/ExtraGuestCell'
+import { ExtraGuestDialog } from '../components/common/ExtraGuestDialog'
 import { PAGE_WIDTH } from '../utils/layout'
 import { DeleteTicketDialog } from '../components/common/DeleteTicketDialog'
 import { DeleteEventTicketsDialog } from '../components/common/DeleteEventTicketsDialog'
@@ -12,8 +14,10 @@ import { SetTicketStatusDialog } from '../components/common/SetTicketStatusDialo
 import { ActiveEventDialog } from '../components/common/ActiveEventDialog'
 import { EventGuestsDialog } from '../components/common/EventGuestsDialog'
 import { SetGuestStateDialog } from '../components/common/SetGuestStateDialog'
-import { LuUserPlus } from 'react-icons/lu'
+import { LuTrash2, LuUserPlus } from 'react-icons/lu'
+import { ConfirmDialog } from '../components/common/ConfirmDialog'
 import { GuestBadge } from '../components/common/GuestBadge'
+import { LeaderBadge } from '../components/common/LeaderBadge'
 import { AddGuestDialog } from '../components/common/AddGuestDialog'
 import { ResetEventStatusDialog } from '../components/common/ResetEventStatusDialog'
 import { YearsCell } from '../components/common/YearsCell'
@@ -23,11 +27,12 @@ import type {
   Ticket as TicketBase,
   WithGuestDeclined,
   WithGuestName,
+  WithLeader,
   WithYears,
 } from '../types/ticket'
 
 /** Ticket con sus años, el nombre de su invitado y la marca "no viene" (tablas aparte) */
-type Ticket = TicketBase & WithYears & WithGuestName & WithGuestDeclined
+type Ticket = TicketBase & WithYears & WithGuestName & WithGuestDeclined & WithLeader
 
 /** Leyenda de una lista (sin QR) para marcar su ingreso a mano */
 interface ExtraLeyenda {
@@ -35,6 +40,11 @@ interface ExtraLeyenda {
   name: string
   years: number | null
   entered_at: string | null
+  is_leyenda: boolean
+  is_leader: boolean
+  guest_status: ExtraGuestStatus
+  guest_name: string | null
+  guest_at: string | null
   extra_groups: { name: string; event_id: string }
 }
 
@@ -44,13 +54,15 @@ const guestState = (t: Ticket): GuestState => (t.guest_at ? 'in' : t.ticket_gues
 const PAGE_SIZE = 10
 
 /** Filtro de la tabla de Editar */
-type EditFilter = 'all' | 'used' | 'unused' | 'guest_in' | 'guest_pending' | 'guest_declined'
+type EditFilter = 'all' | 'used' | 'unused' | 'leaders' | 'guest_in' | 'guest_pending' | 'guest_declined'
 
 /** guests = solo en eventos con invitados activados */
 const editFilterOptions: { value: EditFilter; label: string; guests?: boolean }[] = [
   { value: 'all', label: 'Todos' },
   { value: 'used', label: 'Escaneados' },
   { value: 'unused', label: 'Sin escanear' },
+  // Solo aparece si el evento tiene líderes
+  { value: 'leaders', label: 'Líderes' },
   { value: 'guest_in', label: 'Invitado ingresado', guests: true },
   // Puede llegar todavía (con o sin la leyenda dentro): son los que muestran "Agregar"
   { value: 'guest_pending', label: 'Invitado por llegar', guests: true },
@@ -65,6 +77,8 @@ function matchesEditFilter(t: Ticket, filter: EditFilter): boolean {
       return Boolean(t.used_at)
     case 'unused':
       return !t.used_at
+    case 'leaders':
+      return Boolean(t.ticket_leaders)
     case 'guest_in':
       return Boolean(t.guest_at)
     case 'guest_pending':
@@ -114,7 +128,9 @@ export function EditarPage() {
     setLoading(true)
     const { data, error } = await supabase
       .from('tickets')
-      .select('*, ticket_years(years), ticket_guest_names(guest_name), ticket_guest_declined(declined_at)')
+      .select(
+        '*, ticket_years(years), ticket_guest_names(guest_name), ticket_guest_declined(declined_at), ticket_leaders(created_at)',
+      )
       .eq('event_id', id)
       .order('created_at', { ascending: false })
       .returns<Ticket[]>()
@@ -126,12 +142,28 @@ export function EditarPage() {
 
   // Leyendas de listas (sin QR): su ingreso se marca a mano (ver supabase/19_extra_lists.sql)
   const [extraLeyendas, setExtraLeyendas] = useState<ExtraLeyenda[]>([])
+  const [editingExtraGuest, setEditingExtraGuest] = useState<ExtraLeyenda | null>(null)
+  const [deletingExtra, setDeletingExtra] = useState<ExtraLeyenda | null>(null)
+
+  /** Quitar a una persona de su lista (los QR no se tocan) */
+  const deleteExtraPerson = async (p: ExtraLeyenda): Promise<string | null> => {
+    const { data, error } = await supabase.rpc('delete_extra_person', { p_person_id: p.id })
+    if (error) return error.message
+    const result = data as ExtraResult
+    if (!result.ok) return extraErrors[result.reason]
+    setExtraLeyendas((prev) => prev.filter((x) => x.id !== p.id))
+    setDeletingExtra(null)
+    setNotice(`Se quitó a ${p.name} de la lista ${p.extra_groups.name}.`)
+    return null
+  }
   const loadExtraLeyendas = async (id: string) => {
     const { data, error } = await supabase
       .from('extra_people')
-      .select('id, name, years, entered_at, extra_groups!inner(name, event_id)')
+      .select(
+        'id, name, years, entered_at, is_leyenda, is_leader, guest_status, guest_name, guest_at, extra_groups!inner(name, event_id)',
+      )
       .eq('extra_groups.event_id', id)
-      .eq('is_leyenda', true)
+      .order('is_leyenda', { ascending: false })
       .order('name')
       .returns<ExtraLeyenda[]>()
     if (error) setError(error.message)
@@ -157,6 +189,30 @@ export function EditarPage() {
       prev.map((x) => (x.id === p.id ? { ...x, entered_at: result.entered_at ?? null } : x)),
     )
     setNotice(`${p.name} quedó como ${result.entered_at ? 'ingresada' : 'pendiente'}.`)
+  }
+
+  /** Marcar / desmarcar el ingreso del invitado de una leyenda de lista */
+  const toggleExtraGuest = async (p: ExtraLeyenda) => {
+    setNotice(null)
+    const next = p.guest_status === 'in' ? 'pending' : 'in'
+    const { data, error } = await supabase.rpc('set_extra_person_guest', {
+      p_person_id: p.id,
+      p_status: next,
+      p_guest_name: null,
+    })
+    if (error) {
+      setError(error.message)
+      return
+    }
+    const result = data as ExtraResult & { guest_at?: string | null }
+    if (!result.ok) {
+      setError(extraErrors[result.reason])
+      return
+    }
+    setExtraLeyendas((prev) =>
+      prev.map((x) => (x.id === p.id ? { ...x, guest_status: next, guest_at: result.guest_at ?? null } : x)),
+    )
+    setNotice(`Invitado de ${p.name} quedó como ${next === 'in' ? 'ingresado' : 'pendiente'}.`)
   }
 
   const changeEvent = (id: string) => {
@@ -200,7 +256,10 @@ export function EditarPage() {
 
   // Filtro por nombre (también acepta el inicio del código del QR)
   // Filtros por status (los de invitado solo en eventos con invitados activados)
-  const shownFilterOptions = editFilterOptions.filter((o) => !o.guests || guestsEnabled)
+  const hasLeaders = tickets.some((t) => t.ticket_leaders)
+  const shownFilterOptions = editFilterOptions.filter(
+    (o) => (!o.guests || guestsEnabled) && (o.value !== 'leaders' || hasLeaders),
+  )
   const activeFilter = shownFilterOptions.some((o) => o.value === statusFilter) ? statusFilter : 'all'
   const filtered = filterTickets(
     tickets.filter((t) => matchesEditFilter(t, activeFilter)),
@@ -224,12 +283,16 @@ export function EditarPage() {
   const extraColumns: Column<ExtraLeyenda>[] = [
     {
       key: 'name',
-      header: 'Leyenda',
+      header: 'Persona',
       render: (p) => (
         <div className="min-w-0">
-          <p className="font-medium">{p.name}</p>
+          <p className="font-medium">
+            {p.name}
+            {p.is_leader && <LeaderBadge />}
+          </p>
           <p className="text-xs text-muted">
-            {p.years ? `${p.years} años` : 'Sin años'} · Lista {p.extra_groups.name}
+            {p.is_leyenda ? `Leyenda · ${p.years ? `${p.years} años` : 'Sin años'}` : 'Participante'} · Lista{' '}
+            {p.extra_groups.name}
           </p>
         </div>
       ),
@@ -260,6 +323,37 @@ export function EditarPage() {
         </button>
       ),
     },
+    {
+      key: 'guest',
+      header: 'Invitado',
+      className: 'w-px whitespace-nowrap',
+      render: (p) => (
+        <ExtraGuestCell
+          person={p}
+          onToggle={() => void toggleExtraGuest(p)}
+          onEdit={() => setEditingExtraGuest(p)}
+        />
+      ),
+    },
+    {
+      key: 'actions',
+      header: <span className="sr-only">Acciones</span>,
+      className: 'w-px',
+      render: (p) => (
+        <button
+          type="button"
+          onClick={() => {
+            setNotice(null)
+            setDeletingExtra(p)
+          }}
+          aria-label={`Quitar a ${p.name} de la lista`}
+          title="Quitar de la lista"
+          className="rounded-lg p-2 text-danger-soft hover:bg-danger/15"
+        >
+          <LuTrash2 className="h-5 w-5" aria-hidden="true" />
+        </button>
+      ),
+    },
   ]
 
   const columns: Column<Ticket>[] = [
@@ -269,7 +363,10 @@ export function EditarPage() {
       header: 'Leyenda',
       render: (t) => (
         <div className="min-w-0">
-          <p className={t.name ? 'font-medium' : 'italic text-muted'}>{t.name || 'Sin nombre'}</p>
+          <p className={t.name ? 'font-medium' : 'italic text-muted'}>
+            {t.name || 'Sin nombre'}
+            {t.ticket_leaders && <LeaderBadge />}
+          </p>
           <p className="flex items-center gap-1.5 text-xs text-muted">
             <YearsCell row={t} />
             <span aria-hidden="true">·</span>
@@ -579,11 +676,11 @@ export function EditarPage() {
             />
           </section>
 
-          {/* Leyendas de listas (sin QR): marcar su ingreso a mano */}
+          {/* Personas de listas (sin QR): marcar su ingreso a mano o quitarlas */}
           {extraLeyendas.length > 0 && (
             <section className="space-y-3">
               <div className="flex items-baseline justify-between gap-2">
-                <h2 className="truncate text-lg font-bold">Leyendas de listas · sin QR</h2>
+                <h2 className="truncate text-lg font-bold">Personas de listas · sin QR</h2>
                 <span className="shrink-0 text-sm text-muted">
                   {extraLeyendas.filter((p) => p.entered_at).length} ingresadas / {extraLeyendas.length}
                 </span>
@@ -592,9 +689,33 @@ export function EditarPage() {
                 columns={extraColumns}
                 rows={extraLeyendas}
                 getRowKey={(p) => p.id}
-                emptyMessage="No hay leyendas en listas."
+                emptyMessage="No hay personas en listas."
               />
             </section>
+          )}
+
+          {deletingExtra && (
+            <ConfirmDialog
+              title={`¿Quitar a ${deletingExtra.name}?`}
+              text={`Se elimina de la lista ${deletingExtra.extra_groups.name} y deja de contar en el total de asistentes${
+                deletingExtra.is_leyenda ? ', en leyendas y en Premiación' : ''
+              }.`}
+              confirmLabel="Quitar"
+              onClose={() => setDeletingExtra(null)}
+              onConfirm={() => deleteExtraPerson(deletingExtra)}
+            />
+          )}
+
+          {editingExtraGuest && (
+            <ExtraGuestDialog
+              person={editingExtraGuest}
+              onClose={() => setEditingExtraGuest(null)}
+              onSaved={() => {
+                setNotice(`Se guardó el invitado de ${editingExtraGuest.name}.`)
+                setEditingExtraGuest(null)
+                void loadExtraLeyendas(eventId)
+              }}
+            />
           )}
 
           {/* Zona de peligro */}

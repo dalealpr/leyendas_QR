@@ -1,7 +1,9 @@
 import { useEffect, useState, type KeyboardEvent } from 'react'
+import { LuCrown } from 'react-icons/lu'
 import { supabase } from '../lib/supabase'
 import { Table, type Column } from '../components/ui/Table'
 import { SearchInput } from '../components/ui/SearchInput'
+import { LeaderBadge } from '../components/common/LeaderBadge'
 import { normalize } from '../utils/search'
 import { PAGE_WIDTH } from '../utils/layout'
 import { countClass } from '../utils/filterChip'
@@ -12,11 +14,16 @@ import {
   type Ticket,
   type WithAward,
   type WithAwardOrder,
+  type WithLeader,
   type WithYears,
 } from '../types/ticket'
 
 /** Leyenda con QR, tal como llega de Supabase */
-type TicketAwardRow = Pick<Ticket, 'id' | 'name' | 'code' | 'used_at'> & WithYears & WithAward & WithAwardOrder
+type TicketAwardRow = Pick<Ticket, 'id' | 'name' | 'code' | 'used_at'> &
+  WithYears &
+  WithAward &
+  WithAwardOrder &
+  WithLeader
 
 /** Leyenda de una lista (sin QR), tal como llega de Supabase (ver supabase/19_extra_lists.sql) */
 interface ExtraAwardRow {
@@ -26,6 +33,7 @@ interface ExtraAwardRow {
   entered_at: string | null
   delivered_at: string | null
   award_position: number | null
+  is_leader: boolean
   extra_groups: { name: string }
 }
 
@@ -46,15 +54,29 @@ interface AwardRow {
   position: number | null
   /** Nombre de la lista, si viene de una */
   listName: string | null
+  /** Líder (ver supabase/21_leaders.sql) */
+  isLeader: boolean
 }
 
 const rowKey = (r: AwardRow) => `${r.kind}:${r.id}`
 
-/** Grupos de la tabla, en orden de llamado: 10 → 45 años y al final los que no tienen años */
-const GROUPS: (LeyendaYears | null)[] = [...YEARS_OPTIONS, null]
+/** Grupo de la tabla: por años, "sin años" (null) o el de líderes */
+type GroupId = LeyendaYears | null | 'leaders'
+
+/**
+ * Grupos de la tabla, en orden de llamado: 10 → 45 años, los que no tienen años
+ * y al final los líderes (se premian al último; salen de su grupo de años).
+ */
+const GROUPS: GroupId[] = [...YEARS_OPTIONS, null, 'leaders']
+
+/** Grupo al que pertenece una fila: los líderes van todos juntos al final */
+const groupOf = (r: AwardRow): GroupId => (r.isLeader ? 'leaders' : r.years)
 
 /** Identificador de un grupo para recordar si está desplegado */
-const groupKey = (years: LeyendaYears | null) => (years === null ? 'sin' : String(years))
+const groupKey = (g: GroupId) => (g === null ? 'sin' : String(g))
+
+/** Título del grupo */
+const groupLabel = (g: GroupId) => (g === 'leaders' ? 'Líderes' : g ? `${g} años` : 'Sin años')
 
 /** Dentro de su grupo: por la posición definida en modo Ordenar; sin posición, al final y por nombre */
 function byCallOrder(a: AwardRow, b: AwardRow): number {
@@ -157,12 +179,14 @@ export function PremiacionPage() {
   const [search, setSearch] = useState('')
   const [awardFilter, setAwardFilter] = useState<AwardFilter>('all')
   const [presenceFilter, setPresenceFilter] = useState<PresenceFilter>('all')
+  // Filtro "Líderes" (ver supabase/21_leaders.sql)
+  const [onlyLeaders, setOnlyLeaders] = useState(false)
   // Filas que se están guardando (el interruptor queda bloqueado mientras tanto)
   const [saving, setSaving] = useState<Set<string>>(new Set())
   // Modo Ordenar: muestra flechas y el campo de posición
   const [ordering, setOrdering] = useState(false)
   // Grupo de años cuyo orden se está guardando
-  const [savingGroup, setSavingGroup] = useState<LeyendaYears | null | undefined>(undefined)
+  const [savingGroup, setSavingGroup] = useState<GroupId | undefined>(undefined)
   // Grupos de años desplegados (empiezan todos cerrados)
   const [openGroups, setOpenGroups] = useState<Set<string>>(new Set())
   const toggleGroup = (key: string) =>
@@ -180,13 +204,15 @@ export function PremiacionPage() {
     const [ticketsRes, extrasRes] = await Promise.all([
       supabase
         .from('tickets')
-        .select('id, name, code, used_at, ticket_years(years), ticket_awards(delivered_at), ticket_award_order(position)')
+        .select(
+          'id, name, code, used_at, ticket_years(years), ticket_awards(delivered_at), ticket_award_order(position), ticket_leaders(created_at)',
+        )
         .eq('event_id', id)
         .order('name')
         .returns<TicketAwardRow[]>(),
       supabase
         .from('extra_people')
-        .select('id, name, years, entered_at, delivered_at, award_position, extra_groups!inner(name, event_id)')
+        .select('id, name, years, entered_at, delivered_at, award_position, is_leader, extra_groups!inner(name, event_id)')
         .eq('extra_groups.event_id', id)
         .eq('is_leyenda', true)
         .order('name')
@@ -209,6 +235,7 @@ export function PremiacionPage() {
           deliveredAt: t.ticket_awards?.delivered_at ?? null,
           position: t.ticket_award_order?.position ?? null,
           listName: null,
+          isLeader: Boolean(t.ticket_leaders),
         }),
       ),
       ...(extrasRes.data ?? []).map(
@@ -222,6 +249,7 @@ export function PremiacionPage() {
           deliveredAt: p.delivered_at,
           position: p.award_position,
           listName: p.extra_groups.name,
+          isLeader: p.is_leader,
         }),
       ),
     ])
@@ -289,15 +317,16 @@ export function PremiacionPage() {
   const resetFilters = () => {
     setAwardFilter('all')
     setPresenceFilter('all')
+    setOnlyLeaders(false)
     setSearch('')
   }
 
   // Grupo completo (sin filtros), en orden de llamado: de aquí sale el número de cada leyenda
-  const fullGroup = (years: LeyendaYears | null) => rows.filter((r) => r.years === years).sort(byCallOrder)
+  const fullGroup = (id: GroupId) => rows.filter((r) => groupOf(r) === id).sort(byCallOrder)
 
-  /** Mueve una leyenda a otra posición dentro de su grupo de años y guarda el orden del grupo */
+  /** Mueve una leyenda a otra posición dentro de su grupo (años o líderes) y guarda el orden del grupo */
   const moveTo = async (row: AwardRow, newIndex: number) => {
-    const group = fullGroup(row.years)
+    const group = fullGroup(groupOf(row))
     const from = group.findIndex((r) => rowKey(r) === rowKey(row))
     const to = Math.min(Math.max(newIndex, 0), group.length - 1)
     if (from === -1 || from === to) return
@@ -315,7 +344,7 @@ export function PremiacionPage() {
     const extras = reordered.flatMap((r, i) => (r.kind === 'extra' ? [{ id: r.id, pos: i + 1 }] : []))
 
     setError(null)
-    setSavingGroup(row.years)
+    setSavingGroup(groupOf(row))
     const { data, error } = await supabase.rpc('set_award_order_mixed', {
       p_ticket_ids: tickets.map((t) => t.id),
       p_ticket_positions: tickets.map((t) => t.pos),
@@ -331,22 +360,27 @@ export function PremiacionPage() {
 
   const deliveredCount = rows.filter((r) => r.deliveredAt).length
   const percent = rows.length > 0 ? Math.round((deliveredCount / rows.length) * 100) : 0
-  const hasFilters = awardFilter !== 'all' || presenceFilter !== 'all' || search.trim() !== ''
+  const leaderCount = rows.filter((r) => r.isLeader).length
+  const hasFilters = awardFilter !== 'all' || presenceFilter !== 'all' || onlyLeaders || search.trim() !== ''
 
-  // Tabla agrupada por años; cada grupo muestra solo las filas que pasan los filtros
-  const groups = GROUPS.map((years) => {
-    const all = fullGroup(years)
+  // Tabla agrupada por años (líderes aparte, al final); cada grupo muestra solo las filas que pasan los filtros
+  const groups = GROUPS.map((id) => {
+    const all = fullGroup(id)
     const visible = all.filter(
-      (r) => matchesAward(r, awardFilter) && matchesPresence(r, presenceFilter) && matchesSearch(r, search),
+      (r) =>
+        matchesAward(r, awardFilter) &&
+        matchesPresence(r, presenceFilter) &&
+        (!onlyLeaders || r.isLeader) &&
+        matchesSearch(r, search),
     )
-    return { years, all, visible }
+    return { id, all, visible }
   }).filter((g) => g.visible.length > 0)
   const visibleCount = groups.reduce((sum, g) => sum + g.visible.length, 0)
 
   // Número de llamado de cada leyenda dentro de su grupo (1, 2, 3…)
   const callNumber = new Map<string, { index: number; size: number }>()
-  for (const years of GROUPS) {
-    const all = fullGroup(years)
+  for (const id of GROUPS) {
+    const all = fullGroup(id)
     all.forEach((r, index) => callNumber.set(rowKey(r), { index, size: all.length }))
   }
 
@@ -405,6 +439,7 @@ export function PremiacionPage() {
         <div className="min-w-0">
           <p className={r.name ? 'font-medium' : 'italic text-muted'}>
             {r.name || 'Sin nombre'}
+            {r.isLeader && <LeaderBadge />}
             {/* Leyenda de una lista (sin QR) */}
             {r.listName && (
               <span className="ml-2 rounded-full bg-surface-strong px-2 py-0.5 text-xs font-semibold text-foreground-soft">
@@ -595,6 +630,26 @@ export function PremiacionPage() {
             </div>
           )}
 
+          {/* Filtro de líderes: solo si el evento tiene líderes */}
+          {leaderCount > 0 && (
+            <div className="flex flex-wrap gap-2" role="group" aria-label="Filtrar líderes">
+              {[
+                { value: false, label: 'Todas', count: rows.length },
+                { value: true, label: 'Líderes', count: leaderCount },
+              ].map((o) => (
+                <button
+                  key={o.label}
+                  type="button"
+                  onClick={() => setOnlyLeaders(o.value)}
+                  aria-pressed={onlyLeaders === o.value}
+                  className={chipClass(onlyLeaders === o.value)}
+                >
+                  {o.label} <span className={countClass(onlyLeaders === o.value)}>{o.count}</span>
+                </button>
+              ))}
+            </div>
+          )}
+
           {/* Filtros por presencia (ya entraron al evento o no) */}
           {rows.length > 0 && (
             <div className="flex flex-wrap gap-2" role="group" aria-label="Filtrar por presencia">
@@ -615,7 +670,7 @@ export function PremiacionPage() {
             </div>
           )}
 
-          {/* Una tabla por grupo de años, en orden de llamado */}
+          {/* Una tabla por grupo de años y al final la de líderes, en orden de llamado */}
           {loading || groups.length === 0 ? (
             <Table
               columns={columns}
@@ -632,11 +687,18 @@ export function PremiacionPage() {
             />
           ) : (
             <>
+              {/* El error también aquí: arriba no se ve si se está ordenando más abajo */}
+              {error && (
+                <p role="alert" className="sticky top-2 z-10 rounded-lg bg-danger/15 px-3 py-2 text-sm text-danger-soft">
+                  {error}
+                </p>
+              )}
+
               {/* Abrir / cerrar todos los grupos de una vez */}
               <div className="flex justify-end gap-2 text-sm">
                 <button
                   type="button"
-                  onClick={() => setOpenGroups(new Set(groups.map((g) => groupKey(g.years))))}
+                  onClick={() => setOpenGroups(new Set(groups.map((g) => groupKey(g.id))))}
                   className="rounded-lg px-2 py-1 font-semibold text-foreground-soft hover:bg-surface-strong"
                 >
                   Abrir todos
@@ -651,7 +713,8 @@ export function PremiacionPage() {
               </div>
 
               {groups.map((g) => {
-                const key = groupKey(g.years)
+                const key = groupKey(g.id)
+                const isLeaders = g.id === 'leaders'
                 // Con una búsqueda escrita se abren solos, para ver dónde está el resultado
                 const open = openGroups.has(key) || search.trim() !== ''
                 const delivered = g.all.filter((r) => r.deliveredAt).length
@@ -676,15 +739,16 @@ export function PremiacionPage() {
                       >
                         <path d="M9 6l6 6-6 6" />
                       </svg>
-                      <span className="text-base font-bold uppercase tracking-wide text-primary">
-                        {g.years ? `${g.years} años` : 'Sin años'}
+                      <span className="flex items-center gap-2 text-base font-bold uppercase tracking-wide text-primary">
+                        {isLeaders && <LuCrown className="h-5 w-5" aria-hidden="true" />}
+                        {groupLabel(g.id)}
                       </span>
                       <span className="text-sm text-muted">
                         {g.visible.length === g.all.length
-                          ? `${g.all.length} leyendas`
+                          ? `${g.all.length} ${isLeaders ? (g.all.length === 1 ? 'líder' : 'líderes') : 'leyendas'}`
                           : `${g.visible.length} de ${g.all.length}`}
                       </span>
-                      {savingGroup === g.years && <span className="text-xs text-muted">Guardando…</span>}
+                      {savingGroup === g.id &&<span className="text-xs text-muted">Guardando…</span>}
                       {/* Avance del grupo */}
                       <span
                         className={`ml-auto shrink-0 text-sm font-semibold tabular-nums ${

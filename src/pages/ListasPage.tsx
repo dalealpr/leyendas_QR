@@ -4,6 +4,10 @@ import { supabase } from '../lib/supabase'
 import { Table, type Column } from '../components/ui/Table'
 import { Modal } from '../components/ui/Modal'
 import { PasswordConfirmDialog } from '../components/common/PasswordConfirmDialog'
+import { LeaderBadge } from '../components/common/LeaderBadge'
+import { ExtraGuestCell } from '../components/common/ExtraGuestCell'
+import { ExtraGuestDialog } from '../components/common/ExtraGuestDialog'
+import { ConfirmDialog } from '../components/common/ConfirmDialog'
 import { PAGE_WIDTH } from '../utils/layout'
 import { YEARS_OPTIONS, type Event, type LeyendaYears } from '../types/ticket'
 import { extraErrors, type ExtraGroup, type ExtraPerson, type ExtraResult } from '../types/extraLists'
@@ -21,6 +25,7 @@ type Pending =
   | { type: 'deleteGroup'; group: ExtraGroup }
   | { type: 'editPerson'; person: ExtraPerson }
   | { type: 'deletePerson'; person: ExtraPerson }
+  | { type: 'editGuest'; person: ExtraPerson }
 
 /**
  * Listas (solo admin): personas sin QR agregadas a mano, agrupadas (ej. "Gerencia").
@@ -81,16 +86,61 @@ export function ListasPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- solo al entrar
   }, [])
 
+  /** Llama a una función de listas sin recargar; devuelve el resultado o el mensaje de error */
+  const call = async (fn: string, args: Record<string, unknown>): Promise<{ result?: ExtraResult; message: string | null }> => {
+    const { data, error } = await supabase.rpc(fn, args)
+    if (error) return { message: error.message }
+    const result = data as ExtraResult
+    if (!result.ok) return { result, message: extraErrors[result.reason] }
+    return { result, message: null }
+  }
+
   /** Llama a una función de listas; si sale bien muestra el aviso y recarga */
   const run = async (fn: string, args: Record<string, unknown>, okMessage: string): Promise<string | null> => {
     setError(null)
-    const { data, error } = await supabase.rpc(fn, args)
-    if (error) return error.message
-    const result = data as ExtraResult
-    if (!result.ok) return extraErrors[result.reason]
+    const { message } = await call(fn, args)
+    if (message) return message
     setNotice(okMessage)
     await loadGroups(eventId)
     return null
+  }
+
+  /** Agrega una persona y, si es leyenda con invitado, lo deja anotado como pendiente */
+  const addPerson = async (
+    group: ExtraGroup,
+    name: string,
+    isLeyenda: boolean,
+    years: LeyendaYears | null,
+    isLeader: boolean,
+    withGuest: boolean,
+  ): Promise<string | null> => {
+    setError(null)
+    const added = await call('add_extra_person', {
+      p_group_id: group.id,
+      p_name: name,
+      p_is_leyenda: isLeyenda,
+      p_years: years,
+      p_is_leader: isLeader,
+    })
+    if (added.message) return added.message
+    const id = added.result?.ok ? added.result.id : undefined
+    if (withGuest && id) {
+      const guest = await call('set_extra_person_guest', { p_person_id: id, p_status: 'pending', p_guest_name: null })
+      if (guest.message) setError(`Se agregó a ${name}, pero no se pudo anotar su invitado: ${guest.message}`)
+    }
+    setNotice(`Se agregó a ${name} en ${group.name}.`)
+    await loadGroups(eventId)
+    return null
+  }
+
+  /** Marca / desmarca el ingreso del invitado de una leyenda de lista */
+  const toggleGuest = async (person: ExtraPerson) => {
+    const message = await run(
+      'set_extra_person_guest',
+      { p_person_id: person.id, p_status: person.guest_status === 'in' ? 'pending' : 'in', p_guest_name: null },
+      `Invitado de ${person.name} quedó como ${person.guest_status === 'in' ? 'pendiente' : 'ingresado'}.`,
+    )
+    if (message) setError(message)
   }
 
   const createGroup = async (e: FormEvent<HTMLFormElement>) => {
@@ -197,14 +247,12 @@ export function ListasPage() {
             <GroupCard
               key={g.id}
               group={g}
-              onAddPerson={(name, isLeyenda, years) =>
-                run(
-                  'add_extra_person',
-                  { p_group_id: g.id, p_name: name, p_is_leyenda: isLeyenda, p_years: years },
-                  `Se agregó a ${name} en ${g.name}.`,
-                )
+              onAddPerson={(name, isLeyenda, years, isLeader, withGuest) =>
+                addPerson(g, name, isLeyenda, years, isLeader, withGuest)
               }
               onToggleEntry={(p) => void toggleEntry(p)}
+              onToggleGuest={(p) => void toggleGuest(p)}
+              onEditGuest={(p) => setPending({ type: 'editGuest', person: p })}
               onRename={() => setPending({ type: 'renameGroup', group: g })}
               onDelete={() => setPending({ type: 'deleteGroup', group: g })}
               onEditPerson={(p) => setPending({ type: 'editPerson', person: p })}
@@ -259,14 +307,44 @@ export function ListasPage() {
         <PersonDialog
           person={pending.person}
           onClose={() => setPending(null)}
-          onSave={async (name, isLeyenda, years) => {
-            const message = await run(
-              'update_extra_person',
-              { p_person_id: pending.person.id, p_name: name, p_is_leyenda: isLeyenda, p_years: years },
-              `Se guardaron los cambios de ${name.trim()}.`,
-            )
-            if (!message) setPending(null)
-            return message
+          onSave={async (name, isLeyenda, years, isLeader, guest) => {
+            setError(null)
+            const person = pending.person
+            const updated = await call('update_extra_person', {
+              p_person_id: person.id,
+              p_name: name,
+              p_is_leyenda: isLeyenda,
+              p_years: years,
+              p_is_leader: isLeader,
+            })
+            if (updated.message) return updated.message
+            // Invitado (leyendas y líderes): si ya ingresó se mantiene ingresado
+            const status =
+              (isLeyenda || isLeader) && guest.withGuest ? (person.guest_status === 'in' ? 'in' : 'pending') : 'none'
+            if (status !== person.guest_status || (status !== 'none' && guest.name.trim() !== (person.guest_name ?? ''))) {
+              const saved = await call('set_extra_person_guest', {
+                p_person_id: person.id,
+                p_status: status,
+                p_guest_name: guest.name.trim() || null,
+              })
+              if (saved.message) return saved.message
+            }
+            setNotice(`Se guardaron los cambios de ${name.trim()}.`)
+            await loadGroups(eventId)
+            setPending(null)
+            return null
+          }}
+        />
+      )}
+
+      {pending?.type === 'editGuest' && (
+        <ExtraGuestDialog
+          person={pending.person}
+          onClose={() => setPending(null)}
+          onSaved={() => {
+            setNotice(`Se guardó el invitado de ${pending.person.name}.`)
+            setPending(null)
+            void loadGroups(eventId)
           }}
         />
       )}
@@ -295,8 +373,18 @@ export function ListasPage() {
 interface GroupCardProps {
   group: ExtraGroup
   /** Devuelve null si salió bien o el mensaje de error */
-  onAddPerson: (name: string, isLeyenda: boolean, years: LeyendaYears | null) => Promise<string | null>
+  onAddPerson: (
+    name: string,
+    isLeyenda: boolean,
+    years: LeyendaYears | null,
+    isLeader: boolean,
+    withGuest: boolean,
+  ) => Promise<string | null>
   onToggleEntry: (person: ExtraPerson) => void
+  /** Marcar / desmarcar el ingreso del invitado de una leyenda */
+  onToggleGuest: (person: ExtraPerson) => void
+  /** Agregar / editar / quitar el invitado */
+  onEditGuest: (person: ExtraPerson) => void
   onRename: () => void
   onDelete: () => void
   onEditPerson: (person: ExtraPerson) => void
@@ -304,9 +392,21 @@ interface GroupCardProps {
 }
 
 /** Una lista: encabezado, formulario para agregar personas y su tabla */
-function GroupCard({ group, onAddPerson, onToggleEntry, onRename, onDelete, onEditPerson, onDeletePerson }: GroupCardProps) {
+function GroupCard({
+  group,
+  onAddPerson,
+  onToggleEntry,
+  onToggleGuest,
+  onEditGuest,
+  onRename,
+  onDelete,
+  onEditPerson,
+  onDeletePerson,
+}: GroupCardProps) {
   const [name, setName] = useState('')
   const [isLeyenda, setIsLeyenda] = useState(false)
+  const [isLeader, setIsLeader] = useState(false)
+  const [withGuest, setWithGuest] = useState(false)
   const [years, setYears] = useState<LeyendaYears | ''>('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -319,7 +419,13 @@ function GroupCard({ group, onAddPerson, onToggleEntry, onRename, onDelete, onEd
     e.preventDefault()
     setError(null)
     setBusy(true)
-    const message = await onAddPerson(name.trim(), isLeyenda, isLeyenda && years ? years : null)
+    const message = await onAddPerson(
+      name.trim(),
+      isLeyenda,
+      isLeyenda && years ? years : null,
+      isLeader,
+      (isLeyenda || isLeader) && withGuest,
+    )
     setBusy(false)
     if (message) {
       setError(message)
@@ -333,7 +439,12 @@ function GroupCard({ group, onAddPerson, onToggleEntry, onRename, onDelete, onEd
     {
       key: 'name',
       header: 'Nombre',
-      render: (p) => <span className="font-medium">{p.name}</span>,
+      render: (p) => (
+        <span className="font-medium">
+          {p.name}
+          {p.is_leader && <LeaderBadge />}
+        </span>
+      ),
     },
     {
       key: 'type',
@@ -347,6 +458,15 @@ function GroupCard({ group, onAddPerson, onToggleEntry, onRename, onDelete, onEd
         ) : (
           <span className="text-xs text-muted">Participante</span>
         ),
+    },
+    {
+      key: 'guest',
+      header: 'Invitado',
+      className: 'whitespace-nowrap',
+      // Solo leyendas: Sin invitado · Pendiente (tocar para marcar) · Ingresado
+      render: (p) => (
+        <ExtraGuestCell person={p} onToggle={() => onToggleGuest(p)} onEdit={() => onEditGuest(p)} />
+      ),
     },
     {
       key: 'entry',
@@ -457,6 +577,15 @@ function GroupCard({ group, onAddPerson, onToggleEntry, onRename, onDelete, onEd
           />
           Incluir como leyenda
         </label>
+        <label className="flex items-center gap-2 text-sm font-medium text-foreground-soft">
+          <input
+            type="checkbox"
+            checked={isLeader}
+            onChange={(e) => setIsLeader(e.target.checked)}
+            className="h-5 w-5 accent-[var(--color-primary)]"
+          />
+          Líder
+        </label>
         {isLeyenda && (
           <select
             value={years}
@@ -471,6 +600,18 @@ function GroupCard({ group, onAddPerson, onToggleEntry, onRename, onDelete, onEd
               </option>
             ))}
           </select>
+        )}
+        {/* Leyendas y líderes: pueden venir con 1 invitado */}
+        {(isLeyenda || isLeader) && (
+          <label className="flex items-center gap-2 text-sm font-medium text-foreground-soft">
+            <input
+              type="checkbox"
+              checked={withGuest}
+              onChange={(e) => setWithGuest(e.target.checked)}
+              className="h-5 w-5 accent-[var(--color-primary)]"
+            />
+            Con invitado
+          </label>
         )}
         <button
           type="submit"
@@ -572,18 +713,34 @@ function PersonDialog({
 }: {
   person: ExtraPerson
   onClose: () => void
-  onSave: (name: string, isLeyenda: boolean, years: LeyendaYears | null) => Promise<string | null>
+  onSave: (
+    name: string,
+    isLeyenda: boolean,
+    years: LeyendaYears | null,
+    isLeader: boolean,
+    guest: { withGuest: boolean; name: string },
+  ) => Promise<string | null>
 }) {
   const [name, setName] = useState(person.name)
   const [isLeyenda, setIsLeyenda] = useState(person.is_leyenda)
+  const [isLeader, setIsLeader] = useState(person.is_leader)
   const [years, setYears] = useState<LeyendaYears | ''>(person.years ?? '')
+  const [withGuest, setWithGuest] = useState(person.guest_status !== 'none')
+  const [guestName, setGuestName] = useState(person.guest_name ?? '')
+  // Leyendas y líderes pueden venir con invitado
+  const canGuest = isLeyenda || isLeader
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const submit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault()
     setBusy(true)
-    setError(await onSave(name, isLeyenda, isLeyenda && years ? years : null))
+    setError(
+      await onSave(name, isLeyenda, isLeyenda && years ? years : null, isLeader, {
+        withGuest: canGuest && withGuest,
+        name: guestName,
+      }),
+    )
     setBusy(false)
   }
 
@@ -634,6 +791,15 @@ function PersonDialog({
           />
           Incluir como leyenda
         </label>
+        <label className="flex items-center gap-2 font-medium text-foreground-soft">
+          <input
+            type="checkbox"
+            checked={isLeader}
+            onChange={(e) => setIsLeader(e.target.checked)}
+            className="h-5 w-5 accent-[var(--color-primary)]"
+          />
+          Líder
+        </label>
         {isLeyenda && (
           <label className="block">
             <span className="mb-1 block font-medium text-foreground-soft">Años</span>
@@ -651,6 +817,34 @@ function PersonDialog({
             </select>
           </label>
         )}
+        {canGuest && (
+          <label className="flex items-center gap-2 font-medium text-foreground-soft">
+            <input
+              type="checkbox"
+              checked={withGuest}
+              onChange={(e) => setWithGuest(e.target.checked)}
+              className="h-5 w-5 accent-[var(--color-primary)]"
+            />
+            Con invitado
+          </label>
+        )}
+        {canGuest && withGuest && (
+          <label className="block">
+            <span className="mb-1 block font-medium text-foreground-soft">Nombre del invitado (opcional)</span>
+            <input
+              type="text"
+              value={guestName}
+              onChange={(e) => setGuestName(e.target.value)}
+              maxLength={120}
+              className={inputClass}
+            />
+          </label>
+        )}
+        {person.guest_status === 'in' && canGuest && !withGuest && (
+          <p className="rounded-lg bg-warning/15 px-3 py-2 text-warning">
+            Su invitado ya figura como ingresado: al quitarlo se borra ese ingreso.
+          </p>
+        )}
         {person.is_leyenda && !isLeyenda && (
           <p className="rounded-lg bg-warning/15 px-3 py-2 text-warning">
             Al dejar de ser leyenda sale de Premiación (y se borra su reconocimiento, si estaba entregado).
@@ -662,63 +856,6 @@ function PersonDialog({
           </p>
         )}
       </form>
-    </Modal>
-  )
-}
-
-/** Confirmación simple (sin contraseña) */
-function ConfirmDialog({
-  title,
-  text,
-  confirmLabel,
-  onClose,
-  onConfirm,
-}: {
-  title: string
-  text: string
-  confirmLabel: string
-  onClose: () => void
-  onConfirm: () => Promise<string | null>
-}) {
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-
-  return (
-    <Modal
-      title={title}
-      onClose={onClose}
-      dismissible={!busy}
-      footer={
-        <>
-          <button
-            type="button"
-            onClick={onClose}
-            disabled={busy}
-            className="flex-1 rounded-lg bg-surface-strong py-3 font-semibold hover:bg-surface-hover disabled:opacity-50"
-          >
-            Cancelar
-          </button>
-          <button
-            type="button"
-            disabled={busy}
-            onClick={async () => {
-              setBusy(true)
-              setError(await onConfirm())
-              setBusy(false)
-            }}
-            className="flex-1 rounded-lg bg-danger py-3 font-semibold text-white hover:opacity-90 disabled:opacity-50"
-          >
-            {busy ? 'Quitando…' : confirmLabel}
-          </button>
-        </>
-      }
-    >
-      <p className="text-sm text-foreground-soft">{text}</p>
-      {error && (
-        <p role="alert" className="mt-3 text-sm text-danger-soft">
-          {error}
-        </p>
-      )}
     </Modal>
   )
 }

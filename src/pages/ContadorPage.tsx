@@ -5,12 +5,15 @@ import { useActiveEvent } from '../hooks/useActiveEvent'
 import { Table, type Column } from '../components/ui/Table'
 import { LuCircleCheck, LuTrophy } from 'react-icons/lu'
 import { GuestBadge } from '../components/common/GuestBadge'
+import { LeaderBadge } from '../components/common/LeaderBadge'
 import { YearsCell } from '../components/common/YearsCell'
 import { SearchInput } from '../components/ui/SearchInput'
 import { ilikePattern, normalize } from '../utils/search'
 import { PAGE_WIDTH } from '../utils/layout'
 import { countClass } from '../utils/filterChip'
-import { extraErrors, type ExtraGroup, type ExtraPerson, type ExtraResult } from '../types/extraLists'
+import { canHaveGuest, extraErrors, type ExtraGroup, type ExtraPerson, type ExtraResult } from '../types/extraLists'
+import { ExtraGuestCell } from '../components/common/ExtraGuestCell'
+import { ExtraGuestDialog } from '../components/common/ExtraGuestDialog'
 import {
   YEARS_OPTIONS,
   type EventStats,
@@ -19,6 +22,7 @@ import {
   type WithAward,
   type WithGuestDeclined,
   type WithGuestName,
+  type WithLeader,
   type WithYears,
 } from '../types/ticket'
 
@@ -34,7 +38,8 @@ type TicketRow = Pick<Ticket, 'id' | 'name' | 'event_id' | 'used_at' | 'guest_at
   WithYears &
   WithGuestName &
   WithGuestDeclined &
-  WithAward
+  WithAward &
+  WithLeader
 
 /** Filtro de la tabla por status */
 type StatusFilter =
@@ -45,6 +50,7 @@ type StatusFilter =
   | 'unused_guest_in'
   | 'unused_no_guest'
   | 'guest_declined'
+  | 'leaders'
 
 type StatusOption = { value: StatusFilter; label: string; guests?: boolean }
 
@@ -52,6 +58,8 @@ type StatusOption = { value: StatusFilter; label: string; guests?: boolean }
 const statusOptions: StatusOption[] = [
   { value: 'all', label: 'Todos' },
   { value: 'used', label: 'Leyendas escaneadas' },
+  // Solo aparece si el evento tiene líderes
+  { value: 'leaders', label: 'Líderes' },
   { value: 'guest_in', label: 'Invitados ingresados', guests: true },
   // La leyenda ya ingresó y su invitado todavía no
   { value: 'used_guest_pending', label: 'Escaneados · invitado pendiente', guests: true },
@@ -159,6 +167,7 @@ export function ContadorPage() {
 
   // Cuántas leyendas hay con cada años (para los números de los filtros)
   const [yearCounts, setYearCounts] = useState<Partial<Record<LeyendaYears, number>> | null>(null)
+  const [leaderCount, setLeaderCount] = useState(0)
   const loadYearCounts = useCallback(async () => {
     if (effectiveFilter === null) {
       setYearCounts({})
@@ -174,6 +183,13 @@ export function ContadorPage() {
     const counts: Partial<Record<LeyendaYears, number>> = {}
     for (const { years } of data) counts[years] = (counts[years] ?? 0) + 1
     setYearCounts(counts)
+
+    // Cuántos líderes hay (para el filtro "Líderes"; ver supabase/21_leaders.sql)
+    let leadersQuery = supabase.from('ticket_leaders').select('ticket_id, tickets!inner(event_id)', { count: 'exact', head: true })
+    if (effectiveFilter !== ALL) leadersQuery = leadersQuery.eq('tickets.event_id', effectiveFilter)
+    const { count: leaders, error: leadersError } = await leadersQuery
+    if (leadersError) setError(leadersError.message)
+    else setLeaderCount(leaders ?? 0)
   }, [effectiveFilter])
 
   // Siempre apunta a la última versión, para usarla desde Realtime
@@ -197,10 +213,12 @@ export function ContadorPage() {
     const from = page * PAGE_SIZE
     // Con unos años en particular, !inner deja solo los QR que tienen esos años
     const yearsJoin = typeof yearsFilter === 'number' ? 'ticket_years!inner(years)' : 'ticket_years(years)'
+    // Filtro "Líderes": !inner deja solo los QR marcados como líder
+    const leadersJoin = effectiveStatus === 'leaders' ? 'ticket_leaders!inner(created_at)' : 'ticket_leaders(created_at)'
     let query = supabase
       .from('tickets')
       .select(
-        `id, name, event_id, used_at, guest_at, created_at, ${yearsJoin}, ticket_guest_names(guest_name), ticket_guest_declined(declined_at), ticket_awards(delivered_at)`,
+        `id, name, event_id, used_at, guest_at, created_at, ${yearsJoin}, ${leadersJoin}, ticket_guest_names(guest_name), ticket_guest_declined(declined_at), ticket_awards(delivered_at)`,
         { count: 'exact' },
       )
       .order('created_at', { ascending: false })
@@ -208,7 +226,7 @@ export function ContadorPage() {
     if (effectiveFilter !== ALL) query = query.eq('event_id', effectiveFilter)
     if (typeof yearsFilter === 'number') query = query.eq('ticket_years.years', yearsFilter)
     if (effectiveStatus === 'used') query = query.not('used_at', 'is', null)
-    if (effectiveStatus !== 'all' && effectiveStatus !== 'used') {
+    if (effectiveStatus !== 'all' && effectiveStatus !== 'used' && effectiveStatus !== 'leaders') {
       // Filtros de invitados: solo QR de eventos con invitados activados (igual que la card de Invitados)
       query = query.in('event_id', guestEventIds.split(','))
       if (effectiveStatus === 'guest_in') query = query.not('guest_at', 'is', null)
@@ -320,6 +338,27 @@ export function ContadorPage() {
     await loadExtras()
   }
 
+  const [editingExtraGuest, setEditingExtraGuest] = useState<ExtraPerson | null>(null)
+
+  /** Marcar / desmarcar a mano el ingreso del invitado de una leyenda de lista */
+  const toggleExtraGuest = async (person: ExtraPerson) => {
+    const { data, error } = await supabase.rpc('set_extra_person_guest', {
+      p_person_id: person.id,
+      p_status: person.guest_status === 'in' ? 'pending' : 'in',
+      p_guest_name: null,
+    })
+    if (error) {
+      setError(error.message)
+      return
+    }
+    const result = data as ExtraResult
+    if (!result.ok) {
+      setError(extraErrors[result.reason])
+      return
+    }
+    await loadExtras()
+  }
+
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- carga inicial desde Supabase
     void loadStats()
@@ -379,7 +418,6 @@ export function ContadorPage() {
   // 1 invitado por QR: el total de invitados es el total de QR menos los que no vienen
   const guestsTotal = withGuests.reduce((sum, s) => sum + s.total, 0) - guestsDeclined
   const guestsIn = withGuests.reduce((sum, s) => sum + s.guests, 0)
-  const guestsPending = guestsTotal - guestsIn
   // Titular ya ingresó y su invitado todavía puede llegar (contado en Supabase: hay invitados
   // que entran antes que su leyenda y otros que no vienen, así que used - guests no sirve)
   const guestsWaiting = withGuests.reduce((sum, s) => sum + s.guests_waiting, 0)
@@ -389,7 +427,6 @@ export function ContadorPage() {
     guestsIn - (withGuests.reduce((sum, s) => sum + s.used, 0) - guestsWaiting - guestsDeclined)
   // Leyenda sin escanear y sin invitado agregado (eventos con invitados)
   const unusedNoGuest = withGuests.reduce((sum, s) => sum + s.total - s.used, 0) - guestsFirst
-  const guestsPercent = guestsTotal > 0 ? Math.round((guestsIn / guestsTotal) * 100) : 0
 
   // Listas: las personas incluidas como leyenda suman a la card Leyendas; el resto, solo al total
   const extraPeople = extraGroups.flatMap((g) => g.extra_people)
@@ -398,6 +435,25 @@ export function ContadorPage() {
   const extraOthers = extraPeople.filter((p) => !p.is_leyenda)
   const extraOthersIn = extraOthers.filter((p) => p.entered_at).length
   const hasExtras = extraPeople.length > 0
+  // Invitados de las leyendas de listas (ver supabase/22_extra_guests.sql)
+  // (leyendas y líderes de listas)
+  const extraGuests = extraPeople.filter((p) => canHaveGuest(p) && p.guest_status !== 'none')
+  const extraGuestsIn = extraGuests.filter((p) => p.guest_status === 'in').length
+  const extraGuestsWaiting = extraGuests.filter((p) => p.guest_status === 'pending' && p.entered_at).length
+
+  // Card Invitados: invitados de QR + invitados de listas (leyendas y líderes)
+  const showGuestsCard = withGuests.length > 0 || extraGuests.length > 0
+  const allGuestsTotal = guestsTotal + extraGuests.length
+  const allGuestsIn = guestsIn + extraGuestsIn
+  const allGuestsWaiting = guestsWaiting + extraGuestsWaiting
+  const allGuestsPercent = allGuestsTotal > 0 ? Math.round((allGuestsIn / allGuestsTotal) * 100) : 0
+
+  // Card Líderes: solo los líderes de listas que NO son leyendas
+  const leaders = extraOthers.filter((p) => p.is_leader)
+  const leadersTotal = leaders.length
+  const leadersIn = leaders.filter((p) => p.entered_at).length
+  const leadersPercent = leadersTotal > 0 ? Math.round((leadersIn / leadersTotal) * 100) : 0
+  const showLeadersCard = leadersTotal > 0
 
   // Card Leyendas: leyendas con QR + leyendas de listas
   const leyTotal = total + extraLeyendas.length
@@ -406,10 +462,12 @@ export function ContadorPage() {
   const leyPercent = leyTotal > 0 ? Math.round((leyUsed / leyTotal) * 100) : 0
 
   // Total asistentes: leyendas + invitados (sin los que no vienen) + personas de listas
-  const peopleTotal = leyTotal + guestsTotal + extraOthers.length
-  const peopleIn = leyUsed + guestsIn + extraOthersIn
+  const peopleTotal = leyTotal + allGuestsTotal + extraOthers.length
+  const peopleIn = leyUsed + allGuestsIn + extraOthersIn
   // Card Total asistentes: con invitados o con listas
-  const showPeopleCard = withGuests.length > 0 || hasExtras
+  const showPeopleCard = showGuestsCard || hasExtras
+  // Cuántas cards hay en la fila (para armar la grilla)
+  const cardCount = 1 + Number(showGuestsCard) + Number(showLeadersCard) + Number(showPeopleCard)
   const peoplePercent = peopleTotal > 0 ? Math.round((peopleIn / peopleTotal) * 100) : 0
   // Ancho de cada tramo de la barra, sobre el total de asistentes
   const share = (n: number) => (peopleTotal > 0 ? (n / peopleTotal) * 100 : 0)
@@ -419,7 +477,10 @@ export function ContadorPage() {
       key: 'name',
       header: 'Nombre',
       render: (t) => (
-        <span className={t.name ? 'font-medium' : 'italic text-muted'}>{t.name || 'Sin nombre'}</span>
+        <span className={t.name ? 'font-medium' : 'italic text-muted'}>
+          {t.name || 'Sin nombre'}
+          {t.ticket_leaders && <LeaderBadge />}
+        </span>
       ),
     },
     {
@@ -557,14 +618,17 @@ export function ContadorPage() {
         </p>
       )}
 
-      {/* Cards: tablet horizontal → Leyendas | Invitados y Total abajo; web ancha → las 3 en una fila */}
+      {/* Cards: Leyendas · Invitados · Líderes · Total asistentes (siempre al final).
+          Tablet horizontal → de a 2 por fila (Total ocupa la fila si queda sola); web ancha → todas en una fila */}
         <div
           className={`flex flex-col gap-6 ${
-            withGuests.length > 0
-              ? 'tablet-landscape:grid tablet-landscape:grid-cols-2 desktop:grid-cols-3'
-              : hasExtras
-                ? 'tablet-landscape:grid tablet-landscape:grid-cols-2'
-                : ''
+            cardCount === 4
+              ? 'tablet-landscape:grid tablet-landscape:grid-cols-2 desktop:grid-cols-4'
+              : cardCount === 3
+                ? 'tablet-landscape:grid tablet-landscape:grid-cols-2 desktop:grid-cols-3'
+                : cardCount === 2
+                  ? 'tablet-landscape:grid tablet-landscape:grid-cols-2'
+                  : ''
           }`}
         >
           <CountCard
@@ -586,24 +650,24 @@ export function ContadorPage() {
           />
 
           {/* Invitados (solo eventos con invitados activados) */}
-          {withGuests.length > 0 && (
+          {showGuestsCard && (
             <CountCard
               title="Invitados"
-              total={value(guestsTotal)}
-              done={{ label: 'Ingresados', value: value(guestsIn), className: 'text-success' }}
-              pending={value(guestsPending)}
-              percent={guestsPercent}
+              total={value(allGuestsTotal)}
+              done={{ label: 'Ingresados', value: value(allGuestsIn), className: 'text-success' }}
+              pending={value(allGuestsTotal - allGuestsIn)}
+              percent={allGuestsPercent}
               barClassName="bg-success"
               // Invitados pendientes cuyo titular (la leyenda) ya ingresó
               footer={
                 <p className="mt-6 flex items-center justify-center gap-2 border-t border-line pt-5 text-sm text-foreground-soft tablet-landscape:text-base">
                   <span className="text-3xl font-semibold leading-none tabular-nums text-warning tablet-landscape:text-4xl">
-                    {value(guestsWaiting)}
+                    {value(allGuestsWaiting)}
                   </span>
                   <span>
-                    {guestsWaiting === 1 ? 'invitado' : 'invitados'}{' '}
+                    {allGuestsWaiting === 1 ? 'invitado' : 'invitados'}{' '}
                     <strong className="font-bold text-foreground">
-                      {guestsWaiting === 1 ? 'pendiente' : 'pendientes'}
+                      {allGuestsWaiting === 1 ? 'pendiente' : 'pendientes'}
                     </strong>{' '}
                     con la leyenda dentro
                   </span>
@@ -611,24 +675,47 @@ export function ContadorPage() {
               }
               // Se escanearon "Sin invitado": ya descontados del total
               extra={
-                stats &&
-                guestsDeclined > 0 && (
-                  <p className="mt-3 text-sm text-muted">
-                    <strong className="font-bold text-foreground">{guestsDeclined}</strong>{' '}
-                    {guestsDeclined === 1 ? 'leyenda vino' : 'leyendas vinieron'} sin invitado (no cuentan en el total)
-                  </p>
+                (extraGuests.length > 0 || (stats && guestsDeclined > 0)) && (
+                  <>
+                    {extraGuests.length > 0 && (
+                      <p className="mt-3 text-sm text-muted">
+                        Incluye <strong className="font-bold text-foreground">{extraGuests.length}</strong>{' '}
+                        {extraGuests.length === 1 ? 'invitado' : 'invitados'} de listas ({extraGuestsIn}{' '}
+                        {extraGuestsIn === 1 ? 'ingresado' : 'ingresados'})
+                      </p>
+                    )}
+                    {stats && guestsDeclined > 0 && (
+                      <p className="mt-3 text-sm text-muted">
+                        <strong className="font-bold text-foreground">{guestsDeclined}</strong>{' '}
+                        {guestsDeclined === 1 ? 'leyenda vino' : 'leyendas vinieron'} sin invitado (no cuentan en el
+                        total)
+                      </p>
+                    )}
+                  </>
                 )
               }
             />
           )}
 
-          {/* Total asistentes (leyendas + invitados + listas):
-              con invitados → tablet: fila completa debajo; web ancha: tercera card de la fila.
-              sin invitados (solo listas) → al lado de Leyendas */}
+          {/* Líderes que no son leyendas (personas de listas marcadas como líder) */}
+          {showLeadersCard && (
+            <CountCard
+              title="Líderes"
+              total={leadersTotal}
+              done={{ label: 'Ingresados', value: leadersIn, className: 'text-success' }}
+              pending={leadersTotal - leadersIn}
+              percent={leadersPercent}
+              barClassName="bg-success"
+              extra={<p className="mt-3 text-sm text-muted">Líderes de listas que no son leyendas</p>}
+            />
+          )}
+
+          {/* Total asistentes (leyendas + invitados + listas), siempre la última card:
+              tablet → ocupa la fila completa si queda sola; web ancha → última de la fila */}
           {showPeopleCard && (
         <section
           className={`rounded-2xl bg-surface px-5 py-6 tablet-landscape:py-8 ${
-            withGuests.length > 0 ? 'tablet-landscape:col-span-2 desktop:col-span-1' : ''
+            cardCount % 2 === 1 ? 'tablet-landscape:col-span-2 desktop:col-span-1' : ''
           }`}
         >
           <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
@@ -654,7 +741,7 @@ export function ContadorPage() {
             aria-label={`${peopleIn} de ${peopleTotal} asistentes ingresados`}
           >
             <div className="h-full bg-success transition-all duration-500" style={{ width: `${share(leyUsed)}%` }} />
-            <div className="h-full bg-primary transition-all duration-500" style={{ width: `${share(guestsIn)}%` }} />
+            <div className="h-full bg-primary transition-all duration-500" style={{ width: `${share(allGuestsIn)}%` }} />
             <div
               className="h-full bg-foreground-soft transition-all duration-500"
               style={{ width: `${share(extraOthersIn)}%` }}
@@ -666,10 +753,10 @@ export function ContadorPage() {
               <span className="h-3 w-3 rounded-full bg-success" aria-hidden="true" />
               Leyendas <strong className="tabular-nums text-foreground">{value(leyUsed)}</strong>
             </span>
-            {withGuests.length > 0 && (
+            {showGuestsCard && (
               <span className="flex items-center gap-2">
                 <span className="h-3 w-3 rounded-full bg-primary" aria-hidden="true" />
-                Invitados <strong className="tabular-nums text-foreground">{value(guestsIn)}</strong>
+                Invitados <strong className="tabular-nums text-foreground">{value(allGuestsIn)}</strong>
               </span>
             )}
             {extraOthers.length > 0 && (
@@ -706,10 +793,23 @@ export function ContadorPage() {
                 group={g}
                 eventLabel={effectiveFilter === ALL ? eventName(g.event_id) : null}
                 onToggleEntry={(p) => void toggleExtraEntry(p)}
+                onToggleGuest={(p) => void toggleExtraGuest(p)}
+                onEditGuest={role === 'admin' ? setEditingExtraGuest : undefined}
               />
             ))}
           </div>
         </section>
+      )}
+
+      {editingExtraGuest && (
+        <ExtraGuestDialog
+          person={editingExtraGuest}
+          onClose={() => setEditingExtraGuest(null)}
+          onSaved={() => {
+            setEditingExtraGuest(null)
+            void loadExtras()
+          }}
+        />
       )}
 
       {/* Desglose por evento (admin y dashboard, en "Todos los eventos") */}
@@ -776,6 +876,7 @@ export function ContadorPage() {
         <div className="flex flex-wrap gap-2" role="group" aria-label="Filtrar por status">
           {statusOptions
             .filter((o) => !o.guests || guestEventIds)
+            .filter((o) => o.value !== 'leaders' || leaderCount > 0)
             .map((o) => {
               const selected = effectiveStatus === o.value
               const count = {
@@ -786,6 +887,7 @@ export function ContadorPage() {
                 unused_guest_in: guestsFirst,
                 unused_no_guest: unusedNoGuest,
                 guest_declined: guestsDeclined,
+                leaders: leaderCount,
               }[o.value]
               return (
                 <button
@@ -859,18 +961,28 @@ interface ExtraGroupTableProps {
   /** Nombre del evento (solo en "Todos los eventos") */
   eventLabel: string | null
   onToggleEntry: (person: ExtraPerson) => void
+  onToggleGuest: (person: ExtraPerson) => void
+  /** Solo admin: agregar / editar / quitar el invitado */
+  onEditGuest?: (person: ExtraPerson) => void
 }
 
-/** Tabla de una lista en el Contador: nombre, tipo e ingreso (se marca a mano tocándolo) */
-function ExtraGroupTable({ group, eventLabel, onToggleEntry }: ExtraGroupTableProps) {
+/** Tabla de una lista en el Contador: nombre, tipo, ingreso e invitado (se marcan a mano tocándolos) */
+function ExtraGroupTable({ group, eventLabel, onToggleEntry, onToggleGuest, onEditGuest }: ExtraGroupTableProps) {
   const people = group.extra_people
   const entered = people.filter((p) => p.entered_at).length
+  // Columna Invitado: solo si hay leyendas o líderes (pueden venir con invitado)
+  const hasLeyendas = people.some(canHaveGuest)
 
   const columns: Column<ExtraPerson>[] = [
     {
       key: 'name',
       header: 'Nombre',
-      render: (p) => <span className="font-medium">{p.name}</span>,
+      render: (p) => (
+        <span className="font-medium">
+          {p.name}
+          {p.is_leader && <LeaderBadge />}
+        </span>
+      ),
     },
     {
       key: 'type',
@@ -911,6 +1023,22 @@ function ExtraGroupTable({ group, eventLabel, onToggleEntry }: ExtraGroupTablePr
         </button>
       ),
     },
+    ...(hasLeyendas
+      ? [
+          {
+            key: 'guest',
+            header: 'Invitado',
+            className: 'w-px whitespace-nowrap',
+            render: (p: ExtraPerson) => (
+              <ExtraGuestCell
+                person={p}
+                onToggle={() => onToggleGuest(p)}
+                onEdit={onEditGuest ? () => onEditGuest(p) : undefined}
+              />
+            ),
+          },
+        ]
+      : []),
   ]
 
   return (
