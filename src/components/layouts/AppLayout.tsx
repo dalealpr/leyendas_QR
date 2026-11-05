@@ -6,6 +6,8 @@ import {
   LuClipboardList,
   LuLogOut,
   LuMenu,
+  LuPanelLeftClose,
+  LuPanelLeftOpen,
   LuPencil,
   LuQrCode,
   LuScanLine,
@@ -33,11 +35,31 @@ const navItemClass = (isActive: boolean, size: string) =>
     isActive ? 'bg-primary text-on-primary' : 'text-foreground-soft hover:bg-surface hover:text-primary'
   }`
 
+/** Clave para recordar si la barra lateral está encogida (tablet) */
+const COLLAPSED_KEY = 'sidebar-collapsed'
+
 export function AppLayout() {
   const { session, role, signOut } = useAuth()
   const visible = links.filter((l) => role && l.roles.includes(role))
   // Celular: panel del menú abierto encima de la pantalla
   const [mobileOpen, setMobileOpen] = useState(false)
+  // Tablet: barra lateral encogida (solo íconos); se recuerda en este dispositivo
+  const [collapsed, setCollapsed] = useState(() => {
+    try {
+      return localStorage.getItem(COLLAPSED_KEY) === '1'
+    } catch {
+      return false
+    }
+  })
+  const toggleCollapsed = () =>
+    setCollapsed((prev) => {
+      try {
+        localStorage.setItem(COLLAPSED_KEY, prev ? '0' : '1')
+      } catch {
+        // sin almacenamiento: solo dura mientras la página esté abierta
+      }
+      return !prev
+    })
   const { pathname } = useLocation()
   const current = visible.find((l) => pathname.startsWith(l.to))
 
@@ -58,18 +80,48 @@ export function AppLayout() {
 
   return (
     <div className="flex min-h-dvh bg-background text-foreground">
-      {/* Web/tablet: barra lateral siempre desplegada (ícono + nombre), de arriba a abajo.
-          sticky + h-dvh: queda fija al bajar en páginas largas. */}
-      <aside className="sticky top-0 hidden h-dvh w-56 shrink-0 flex-col gap-2 border-r border-line px-3 py-4 md:flex">
-        <div className="mb-3 flex items-center gap-3">
+      {/* Web/tablet: barra lateral de arriba a abajo (sticky + h-dvh: queda fija al bajar en páginas largas).
+          Tablet: se encoge a solo íconos y se vuelve a sacar con el botón de arriba.
+          Web ancha (desktop): siempre desplegada, sin botón. */}
+      <aside
+        className={`sticky top-0 hidden h-dvh shrink-0 flex-col gap-2 border-r border-line py-4 transition-[width] duration-200 md:flex desktop:w-56 desktop:px-3 ${
+          collapsed ? 'w-16 px-2' : 'w-56 px-3'
+        }`}
+      >
+        <div className={`mb-3 flex items-center gap-3 ${collapsed ? 'flex-col desktop:flex-row' : ''}`}>
           <img src={logo} alt="Leyendas" className="h-10 w-10 shrink-0 rounded-lg object-cover" />
-          <span className="text-lg font-bold text-primary">Leyendas</span>
+          <span className={`flex-1 text-lg font-bold text-primary ${collapsed ? 'hidden desktop:inline' : ''}`}>
+            Leyendas
+          </span>
+          <button
+            type="button"
+            onClick={toggleCollapsed}
+            aria-label={collapsed ? 'Mostrar menú' : 'Encoger menú'}
+            title={collapsed ? 'Mostrar menú' : 'Encoger menú'}
+            aria-expanded={!collapsed}
+            className="rounded-lg p-2 text-foreground-soft hover:bg-surface hover:text-primary desktop:hidden"
+          >
+            {collapsed ? (
+              <LuPanelLeftOpen className="h-5 w-5" aria-hidden="true" />
+            ) : (
+              <LuPanelLeftClose className="h-5 w-5" aria-hidden="true" />
+            )}
+          </button>
         </div>
         <nav className="flex flex-col gap-1" aria-label="Menú">
           {visible.map((l) => (
-            <NavLink key={l.to} to={l.to} className={({ isActive }) => navItemClass(isActive, 'h-11 text-sm')}>
+            <NavLink
+              key={l.to}
+              to={l.to}
+              // Encogida: el nombre queda en el tooltip y para lectores de pantalla
+              title={collapsed ? l.label : undefined}
+              aria-label={l.label}
+              className={({ isActive }) =>
+                navItemClass(isActive, `h-11 text-sm ${collapsed ? 'justify-center desktop:justify-start' : ''}`)
+              }
+            >
               <l.icon className="h-5 w-5 shrink-0" aria-hidden="true" />
-              {l.label}
+              <span className={collapsed ? 'hidden desktop:inline' : ''}>{l.label}</span>
             </NavLink>
           ))}
         </nav>
