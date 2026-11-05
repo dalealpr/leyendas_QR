@@ -6,6 +6,7 @@ import { TicketQrModal } from '../components/common/TicketQrModal'
 import { BulkCreatedModal } from '../components/common/BulkCreatedModal'
 import { Table, type Column } from '../components/ui/Table'
 import type { Event, NewTicket, Ticket } from '../types/ticket'
+import { PAGE_WIDTH } from '../utils/layout'
 
 const PAGE_SIZE = 10
 
@@ -186,11 +187,12 @@ export function GenerarPage() {
   ]
 
   return (
-    <div className="mx-auto w-full max-w-md space-y-6 p-4">
+    <div className={`${PAGE_WIDTH} space-y-6 py-4`}>
       {/* Encabezado + evento (aplica a generar y a descargar) */}
       <section className="space-y-4 rounded-2xl bg-surface p-4">
         <div>
-          <h1 className="text-xl font-bold">Generar y descargar QR</h1>
+          {/* En web el título va en la barra superior */}
+          <h1 className="text-xl font-bold md:hidden">Generar y descargar QR</h1>
           <p className="text-sm text-muted">Elige el evento con el que vas a trabajar.</p>
         </div>
         <label className="block">

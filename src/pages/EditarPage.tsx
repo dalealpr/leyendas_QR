@@ -3,13 +3,18 @@ import { supabase } from '../lib/supabase'
 import { Table, type Column } from '../components/ui/Table'
 import { SearchInput } from '../components/ui/SearchInput'
 import { filterTickets } from '../utils/search'
+import { countClass } from '../utils/filterChip'
+import { extraErrors, type ExtraResult } from '../types/extraLists'
+import { PAGE_WIDTH } from '../utils/layout'
 import { DeleteTicketDialog } from '../components/common/DeleteTicketDialog'
 import { DeleteEventTicketsDialog } from '../components/common/DeleteEventTicketsDialog'
 import { SetTicketStatusDialog } from '../components/common/SetTicketStatusDialog'
 import { ActiveEventDialog } from '../components/common/ActiveEventDialog'
 import { EventGuestsDialog } from '../components/common/EventGuestsDialog'
 import { SetGuestStateDialog } from '../components/common/SetGuestStateDialog'
+import { LuUserPlus } from 'react-icons/lu'
 import { GuestBadge } from '../components/common/GuestBadge'
+import { AddGuestDialog } from '../components/common/AddGuestDialog'
 import { ResetEventStatusDialog } from '../components/common/ResetEventStatusDialog'
 import { YearsCell } from '../components/common/YearsCell'
 import type {
@@ -24,10 +29,50 @@ import type {
 /** Ticket con sus años, el nombre de su invitado y la marca "no viene" (tablas aparte) */
 type Ticket = TicketBase & WithYears & WithGuestName & WithGuestDeclined
 
+/** Leyenda de una lista (sin QR) para marcar su ingreso a mano */
+interface ExtraLeyenda {
+  id: string
+  name: string
+  years: number | null
+  entered_at: string | null
+  extra_groups: { name: string; event_id: string }
+}
+
 /** Estado actual del invitado de un QR */
 const guestState = (t: Ticket): GuestState => (t.guest_at ? 'in' : t.ticket_guest_declined ? 'declined' : 'pending')
 
 const PAGE_SIZE = 10
+
+/** Filtro de la tabla de Editar */
+type EditFilter = 'all' | 'used' | 'unused' | 'guest_in' | 'guest_pending' | 'guest_declined'
+
+/** guests = solo en eventos con invitados activados */
+const editFilterOptions: { value: EditFilter; label: string; guests?: boolean }[] = [
+  { value: 'all', label: 'Todos' },
+  { value: 'used', label: 'Escaneados' },
+  { value: 'unused', label: 'Sin escanear' },
+  { value: 'guest_in', label: 'Invitado ingresado', guests: true },
+  // Puede llegar todavía (con o sin la leyenda dentro): son los que muestran "Agregar"
+  { value: 'guest_pending', label: 'Invitado por llegar', guests: true },
+  { value: 'guest_declined', label: 'Sin invitado (no viene)', guests: true },
+]
+
+function matchesEditFilter(t: Ticket, filter: EditFilter): boolean {
+  switch (filter) {
+    case 'all':
+      return true
+    case 'used':
+      return Boolean(t.used_at)
+    case 'unused':
+      return !t.used_at
+    case 'guest_in':
+      return Boolean(t.guest_at)
+    case 'guest_pending':
+      return !t.guest_at && !t.ticket_guest_declined
+    case 'guest_declined':
+      return Boolean(t.ticket_guest_declined) && !t.guest_at
+  }
+}
 
 function formatDate(iso: string): string {
   return new Date(iso).toLocaleString('es', {
@@ -47,6 +92,7 @@ type PendingAction =
   | { type: 'activate'; eventId: string | null }
   | { type: 'guests'; enable: boolean }
   | { type: 'guestStatus'; ticket: Ticket }
+  | { type: 'addGuest'; ticket: Ticket }
 
 export function EditarPage() {
   const [events, setEvents] = useState<Event[]>([])
@@ -75,6 +121,42 @@ export function EditarPage() {
     setLoading(false)
     if (error) setError(error.message)
     else setTickets(data)
+    void loadExtraLeyendas(id)
+  }
+
+  // Leyendas de listas (sin QR): su ingreso se marca a mano (ver supabase/19_extra_lists.sql)
+  const [extraLeyendas, setExtraLeyendas] = useState<ExtraLeyenda[]>([])
+  const loadExtraLeyendas = async (id: string) => {
+    const { data, error } = await supabase
+      .from('extra_people')
+      .select('id, name, years, entered_at, extra_groups!inner(name, event_id)')
+      .eq('extra_groups.event_id', id)
+      .eq('is_leyenda', true)
+      .order('name')
+      .returns<ExtraLeyenda[]>()
+    if (error) setError(error.message)
+    else setExtraLeyendas(data ?? [])
+  }
+
+  const toggleExtraEntry = async (p: ExtraLeyenda) => {
+    setNotice(null)
+    const { data, error } = await supabase.rpc('set_extra_person_entry', {
+      p_person_id: p.id,
+      p_entered: !p.entered_at,
+    })
+    if (error) {
+      setError(error.message)
+      return
+    }
+    const result = data as ExtraResult
+    if (!result.ok) {
+      setError(extraErrors[result.reason])
+      return
+    }
+    setExtraLeyendas((prev) =>
+      prev.map((x) => (x.id === p.id ? { ...x, entered_at: result.entered_at ?? null } : x)),
+    )
+    setNotice(`${p.name} quedó como ${result.entered_at ? 'ingresada' : 'pendiente'}.`)
   }
 
   const changeEvent = (id: string) => {
@@ -110,9 +192,22 @@ export function EditarPage() {
     setPage(0)
   }
 
+  const [statusFilter, setStatusFilter] = useState<EditFilter>('all')
+  const changeStatusFilter = (value: EditFilter) => {
+    setStatusFilter(value)
+    setPage(0)
+  }
+
   // Filtro por nombre (también acepta el inicio del código del QR)
-  const filtered = filterTickets(tickets, search)
+  // Filtros por status (los de invitado solo en eventos con invitados activados)
+  const shownFilterOptions = editFilterOptions.filter((o) => !o.guests || guestsEnabled)
+  const activeFilter = shownFilterOptions.some((o) => o.value === statusFilter) ? statusFilter : 'all'
+  const filtered = filterTickets(
+    tickets.filter((t) => matchesEditFilter(t, activeFilter)),
+    search,
+  )
   const query = search.trim()
+  const hasFilters = activeFilter !== 'all' || query !== ''
 
   // Paginado en memoria
   const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE))
@@ -126,22 +221,62 @@ export function EditarPage() {
     setNotice(message)
   }
 
-  const columns: Column<Ticket>[] = [
+  const extraColumns: Column<ExtraLeyenda>[] = [
     {
       key: 'name',
-      header: 'Nombre',
-      render: (t) => (
+      header: 'Leyenda',
+      render: (p) => (
         <div className="min-w-0">
-          <p className={t.name ? 'font-medium' : 'italic text-muted'}>{t.name || 'Sin nombre'}</p>
-          <p className="font-mono text-xs text-muted">{t.code.slice(0, 8)}…</p>
+          <p className="font-medium">{p.name}</p>
+          <p className="text-xs text-muted">
+            {p.years ? `${p.years} años` : 'Sin años'} · Lista {p.extra_groups.name}
+          </p>
         </div>
       ),
     },
     {
-      key: 'years',
-      header: 'Años',
-      className: 'whitespace-nowrap',
-      render: (t) => <YearsCell row={t} />,
+      key: 'entry',
+      header: 'Ingreso',
+      className: 'w-px whitespace-nowrap',
+      render: (p) => (
+        <button
+          type="button"
+          onClick={() => void toggleExtraEntry(p)}
+          title={p.entered_at ? 'Marcar como pendiente' : 'Marcar ingreso'}
+          className="rounded-lg text-left hover:opacity-80"
+        >
+          {p.entered_at ? (
+            <span className="inline-flex flex-col">
+              <span className="w-fit rounded-full bg-success/15 px-2 py-1 text-xs font-semibold text-success">
+                Ingresado
+              </span>
+              <span className="mt-1 text-xs text-muted">{formatDate(p.entered_at)}</span>
+            </span>
+          ) : (
+            <span className="rounded-full bg-warning/15 px-2 py-1 text-xs font-semibold text-warning">
+              Pendiente · marcar
+            </span>
+          )}
+        </button>
+      ),
+    },
+  ]
+
+  const columns: Column<Ticket>[] = [
+    // Leyenda: nombre y, debajo, sus años y el inicio del código del QR
+    {
+      key: 'name',
+      header: 'Leyenda',
+      render: (t) => (
+        <div className="min-w-0">
+          <p className={t.name ? 'font-medium' : 'italic text-muted'}>{t.name || 'Sin nombre'}</p>
+          <p className="flex items-center gap-1.5 text-xs text-muted">
+            <YearsCell row={t} />
+            <span aria-hidden="true">·</span>
+            <span className="font-mono">{t.code.slice(0, 8)}…</span>
+          </p>
+        </div>
+      ),
     },
     {
       key: 'status',
@@ -169,6 +304,7 @@ export function EditarPage() {
             key: 'guest',
             header: 'Invitado',
             className: 'whitespace-nowrap',
+            // Estado del invitado; se toca para cambiarlo (con contraseña)
             render: (t: Ticket) => (
               <button
                 type="button"
@@ -179,13 +315,39 @@ export function EditarPage() {
                 title="Cambiar estado del invitado"
                 className="rounded-lg text-left hover:opacity-80"
               >
-                <GuestBadge
-                  ticket={t}
-                  guestName={t.ticket_guest_names?.guest_name}
-                  declined={Boolean(t.ticket_guest_declined)}
-                />
+                <GuestBadge ticket={t} declined={Boolean(t.ticket_guest_declined)} />
               </button>
             ),
+          },
+          {
+            key: 'guestName',
+            header: 'Nombre invitado',
+            className: 'whitespace-nowrap',
+            // Nombre si se registró; si el invitado todavía puede llegar, el botón para agregarlo
+            render: (t: Ticket) => {
+              if (t.ticket_guest_names?.guest_name) {
+                return <span className="max-w-48 truncate font-medium">{t.ticket_guest_names.guest_name}</span>
+              }
+              if (!t.guest_at && !t.ticket_guest_declined) {
+                return (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setNotice(null)
+                      setPending({ type: 'addGuest', ticket: t })
+                    }}
+                    title="Agregar invitado"
+                    aria-label={`Agregar invitado de ${t.name || 'sin nombre'}`}
+                    className="flex items-center gap-1 rounded-lg border border-primary px-2 py-1 text-xs font-semibold text-primary hover:bg-primary/15"
+                  >
+                    <LuUserPlus className="h-4 w-4" aria-hidden="true" />
+                    Agregar
+                  </button>
+                )
+              }
+              // Ingresó sin nombre registrado, o no viene
+              return <span className="text-muted">—</span>
+            },
           },
         ]
       : []),
@@ -235,10 +397,11 @@ export function EditarPage() {
   ]
 
   return (
-    <div className="mx-auto w-full max-w-2xl space-y-6 p-4">
+    <div className={`${PAGE_WIDTH} space-y-6 py-4`}>
       <section className="space-y-4 rounded-2xl bg-surface p-4">
         <div>
-          <h1 className="text-xl font-bold">Editar QR</h1>
+          {/* En web el título va en la barra superior */}
+          <h1 className="text-xl font-bold md:hidden">Editar QR</h1>
           <p className="text-sm text-muted">
             Cambia el status o elimina QR. Cada acción pide la contraseña del admin.
           </p>
@@ -352,9 +515,47 @@ export function EditarPage() {
               </p>
             )}
 
-            {/* Buscador */}
+            {/* Buscador + filtros */}
             {tickets.length > 0 && (
-              <SearchInput value={search} onChange={changeSearch} resultCount={filtered.length} />
+              <>
+                <SearchInput value={search} onChange={changeSearch} resultCount={filtered.length} />
+                <div className="flex flex-wrap items-center gap-2" role="group" aria-label="Filtrar">
+                  {shownFilterOptions.map((o) => {
+                    const selected = activeFilter === o.value
+                    return (
+                      <button
+                        key={o.value}
+                        type="button"
+                        onClick={() => changeStatusFilter(o.value)}
+                        aria-pressed={selected}
+                        className={`rounded-full border px-3 py-1.5 text-sm font-semibold ${
+                          selected
+                            ? 'border-primary bg-primary text-on-primary'
+                            : 'border-line bg-surface text-foreground-soft hover:bg-surface-strong'
+                        }`}
+                      >
+                        {o.label}{' '}
+                        <span className={countClass(selected)}>
+                          {tickets.filter((t) => matchesEditFilter(t, o.value)).length}
+                        </span>
+                      </button>
+                    )
+                  })}
+                  {hasFilters && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setStatusFilter('all')
+                        setSearch('')
+                        setPage(0)
+                      }}
+                      className="ml-auto flex items-center gap-1 rounded-lg border border-line px-3 py-1.5 text-sm font-semibold text-foreground-soft hover:bg-surface-strong"
+                    >
+                      <span aria-hidden="true">✕</span> Limpiar filtros
+                    </button>
+                  )}
+                </div>
+              </>
             )}
 
             <Table
@@ -362,7 +563,13 @@ export function EditarPage() {
               rows={pageRows}
               getRowKey={(t) => t.id}
               loading={loading}
-              emptyMessage={query ? `Ningún nombre coincide con “${query}”.` : 'Este evento no tiene QR.'}
+              emptyMessage={
+                query
+                  ? `Ningún nombre coincide con “${query}”.`
+                  : activeFilter !== 'all'
+                    ? 'No hay QR con este filtro.'
+                    : 'Este evento no tiene QR.'
+              }
               pagination={{
                 page: currentPage,
                 pageSize: PAGE_SIZE,
@@ -371,6 +578,24 @@ export function EditarPage() {
               }}
             />
           </section>
+
+          {/* Leyendas de listas (sin QR): marcar su ingreso a mano */}
+          {extraLeyendas.length > 0 && (
+            <section className="space-y-3">
+              <div className="flex items-baseline justify-between gap-2">
+                <h2 className="truncate text-lg font-bold">Leyendas de listas · sin QR</h2>
+                <span className="shrink-0 text-sm text-muted">
+                  {extraLeyendas.filter((p) => p.entered_at).length} ingresadas / {extraLeyendas.length}
+                </span>
+              </div>
+              <Table
+                columns={extraColumns}
+                rows={extraLeyendas}
+                getRowKey={(p) => p.id}
+                emptyMessage="No hay leyendas en listas."
+              />
+            </section>
+          )}
 
           {/* Zona de peligro */}
           {tickets.length > 0 && (
@@ -466,6 +691,18 @@ export function EditarPage() {
       )}
 
       {/* Modales con contraseña */}
+      {pending?.type === 'addGuest' && (
+        <AddGuestDialog
+          ticketId={pending.ticket.id}
+          leyendaName={pending.ticket.name}
+          onClose={() => setPending(null)}
+          onAdded={() => {
+            done(`Se registró el ingreso del invitado de ${pending.ticket.name || 'QR sin nombre'}.`)
+            void loadTickets(eventId)
+          }}
+        />
+      )}
+
       {pending?.type === 'guestStatus' && (
         <SetGuestStateDialog
           ticketId={pending.ticket.id}
@@ -552,6 +789,8 @@ export function EditarPage() {
                 ticket_guest_declined: null,
               })),
             )
+            // Supabase también deja sin ingreso a las leyendas de listas (supabase/20_lists_award_reset.sql)
+            void loadExtraLeyendas(eventId)
             done(`Se reinició el status de ${reset} QR de ${eventName(eventId)}.`)
           }}
         />

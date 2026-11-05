@@ -88,8 +88,8 @@ export function AddGuestDialog({ ticketId, leyendaName, onClose, onAdded }: Prop
     >
       <form id={formId} onSubmit={handleSubmit} className="space-y-3 text-sm text-foreground-soft">
         <p>
-          El invitado quedará como <strong className="text-success">ingresado</strong> aunque la leyenda
-          todavía no llegue. Cuando la leyenda se escanee, no se volverá a preguntar por su invitado.
+          El invitado quedará como <strong className="text-success">ingresado</strong>. Si la leyenda todavía
+          no llega, al escanearla ya no se preguntará por su invitado.
         </p>
 
         <label className="block">

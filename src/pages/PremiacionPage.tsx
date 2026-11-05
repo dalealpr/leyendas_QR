@@ -2,23 +2,53 @@ import { useEffect, useState, type KeyboardEvent } from 'react'
 import { supabase } from '../lib/supabase'
 import { Table, type Column } from '../components/ui/Table'
 import { SearchInput } from '../components/ui/SearchInput'
-import { YearsCell } from '../components/common/YearsCell'
-import { filterTickets } from '../utils/search'
+import { normalize } from '../utils/search'
+import { PAGE_WIDTH } from '../utils/layout'
 import { countClass } from '../utils/filterChip'
 import {
   YEARS_OPTIONS,
-  ticketYears,
   type Event,
   type LeyendaYears,
-  type SetAwardOrderResult,
-  type SetTicketAwardResult,
   type Ticket,
   type WithAward,
   type WithAwardOrder,
   type WithYears,
 } from '../types/ticket'
 
-type AwardRow = Pick<Ticket, 'id' | 'name' | 'code' | 'used_at'> & WithYears & WithAward & WithAwardOrder
+/** Leyenda con QR, tal como llega de Supabase */
+type TicketAwardRow = Pick<Ticket, 'id' | 'name' | 'code' | 'used_at'> & WithYears & WithAward & WithAwardOrder
+
+/** Leyenda de una lista (sin QR), tal como llega de Supabase (ver supabase/19_extra_lists.sql) */
+interface ExtraAwardRow {
+  id: string
+  name: string
+  years: LeyendaYears | null
+  entered_at: string | null
+  delivered_at: string | null
+  award_position: number | null
+  extra_groups: { name: string }
+}
+
+/**
+ * Fila de Premiación: misma forma para leyendas con QR y leyendas de listas,
+ * así se ordenan y se entregan juntas dentro de su grupo de años.
+ */
+interface AwardRow {
+  kind: 'ticket' | 'extra'
+  id: string
+  name: string | null
+  /** Código del QR (para buscar por él); null en las de listas */
+  code: string | null
+  years: LeyendaYears | null
+  /** Ya entró al evento (QR escaneado o ingreso marcado a mano) */
+  present: boolean
+  deliveredAt: string | null
+  position: number | null
+  /** Nombre de la lista, si viene de una */
+  listName: string | null
+}
+
+const rowKey = (r: AwardRow) => `${r.kind}:${r.id}`
 
 /** Grupos de la tabla, en orden de llamado: 10 → 45 años y al final los que no tienen años */
 const GROUPS: (LeyendaYears | null)[] = [...YEARS_OPTIONS, null]
@@ -28,8 +58,8 @@ const groupKey = (years: LeyendaYears | null) => (years === null ? 'sin' : Strin
 
 /** Dentro de su grupo: por la posición definida en modo Ordenar; sin posición, al final y por nombre */
 function byCallOrder(a: AwardRow, b: AwardRow): number {
-  const pa = a.ticket_award_order?.position ?? Number.POSITIVE_INFINITY
-  const pb = b.ticket_award_order?.position ?? Number.POSITIVE_INFINITY
+  const pa = a.position ?? Number.POSITIVE_INFINITY
+  const pb = b.position ?? Number.POSITIVE_INFINITY
   if (pa !== pb) return pa - pb
   return (a.name ?? '').localeCompare(b.name ?? '', 'es')
 }
@@ -44,9 +74,9 @@ const awardOptions: { value: AwardFilter; label: string }[] = [
 ]
 
 const matchesAward = (row: AwardRow, filter: AwardFilter) =>
-  filter === 'all' || (filter === 'delivered') === Boolean(row.ticket_awards)
+  filter === 'all' || (filter === 'delivered') === Boolean(row.deliveredAt)
 
-/** Filtro por presencia: si la leyenda ya fue escaneada en la entrada */
+/** Filtro por presencia: si la leyenda ya entró al evento */
 type PresenceFilter = 'all' | 'present' | 'absent'
 
 const presenceOptions: { value: PresenceFilter; label: string }[] = [
@@ -56,7 +86,14 @@ const presenceOptions: { value: PresenceFilter; label: string }[] = [
 ]
 
 const matchesPresence = (row: AwardRow, filter: PresenceFilter) =>
-  filter === 'all' || (filter === 'present') === Boolean(row.used_at)
+  filter === 'all' || (filter === 'present') === row.present
+
+/** Buscador: por nombre (sin tildes) o por el inicio del código del QR */
+function matchesSearch(row: AwardRow, search: string): boolean {
+  const query = normalize(search)
+  if (!query) return true
+  return normalize(row.name ?? 'sin nombre').includes(query) || Boolean(row.code?.startsWith(query))
+}
 
 function formatTime(iso: string): string {
   return new Date(iso).toLocaleTimeString('es', { hour: '2-digit', minute: '2-digit' })
@@ -106,9 +143,10 @@ function PositionInput({
 
 /**
  * Premiación (solo admin): marcar a qué leyendas ya se les entregó el reconocimiento (trofeo + kit).
+ * Incluye las leyendas con QR y las leyendas de listas (sin QR).
  * Un interruptor por fila, sin modales, para que la entrega sea rápida.
  * Agrupada por años (10 → 45); dentro de cada grupo, en el orden de llamado del modo Ordenar.
- * La entrega y el orden van en tablas aparte (ticket_awards, ticket_award_order): los QR no se modifican.
+ * La entrega y el orden van en tablas aparte: los QR no se modifican.
  */
 export function PremiacionPage() {
   const [events, setEvents] = useState<Event[]>([])
@@ -137,15 +175,56 @@ export function PremiacionPage() {
 
   const eventName = (id: string) => events.find((e) => e.id === id)?.name ?? id
 
+  /** Leyendas con QR + leyendas de listas del evento, en una sola lista */
   const loadRows = async (id: string) => {
-    const { data, error } = await supabase
-      .from('tickets')
-      .select('id, name, code, used_at, ticket_years(years), ticket_awards(delivered_at), ticket_award_order(position)')
-      .eq('event_id', id)
-      .order('name')
-      .returns<AwardRow[]>()
-    if (error) setError(error.message)
-    else setRows(data)
+    const [ticketsRes, extrasRes] = await Promise.all([
+      supabase
+        .from('tickets')
+        .select('id, name, code, used_at, ticket_years(years), ticket_awards(delivered_at), ticket_award_order(position)')
+        .eq('event_id', id)
+        .order('name')
+        .returns<TicketAwardRow[]>(),
+      supabase
+        .from('extra_people')
+        .select('id, name, years, entered_at, delivered_at, award_position, extra_groups!inner(name, event_id)')
+        .eq('extra_groups.event_id', id)
+        .eq('is_leyenda', true)
+        .order('name')
+        .returns<ExtraAwardRow[]>(),
+    ])
+    const err = ticketsRes.error ?? extrasRes.error
+    if (err) {
+      setError(err.message)
+      return
+    }
+    setRows([
+      ...(ticketsRes.data ?? []).map(
+        (t): AwardRow => ({
+          kind: 'ticket',
+          id: t.id,
+          name: t.name,
+          code: t.code,
+          years: t.ticket_years?.years ?? null,
+          present: Boolean(t.used_at),
+          deliveredAt: t.ticket_awards?.delivered_at ?? null,
+          position: t.ticket_award_order?.position ?? null,
+          listName: null,
+        }),
+      ),
+      ...(extrasRes.data ?? []).map(
+        (p): AwardRow => ({
+          kind: 'extra',
+          id: p.id,
+          name: p.name,
+          code: null,
+          years: p.years,
+          present: Boolean(p.entered_at),
+          deliveredAt: p.delivered_at,
+          position: p.award_position,
+          listName: p.extra_groups.name,
+        }),
+      ),
+    ])
   }
 
   const changeEvent = async (id: string) => {
@@ -176,31 +255,35 @@ export function PremiacionPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- solo al entrar
   }, [])
 
-  const setRowAward = (id: string, award: AwardRow['ticket_awards']) =>
-    setRows((prev) => prev.map((r) => (r.id === id ? { ...r, ticket_awards: award } : r)))
+  const setRowDelivered = (key: string, deliveredAt: string | null) =>
+    setRows((prev) => prev.map((r) => (rowKey(r) === key ? { ...r, deliveredAt } : r)))
 
   /** Cambia al instante en pantalla y se guarda; si falla, vuelve atrás */
   const toggleAward = async (row: AwardRow) => {
-    const previous = row.ticket_awards
+    const key = rowKey(row)
+    const previous = row.deliveredAt
     const delivered = !previous
     setError(null)
-    setRowAward(row.id, delivered ? { delivered_at: new Date().toISOString() } : null)
-    setSaving((prev) => new Set(prev).add(row.id))
+    setRowDelivered(key, delivered ? new Date().toISOString() : null)
+    setSaving((prev) => new Set(prev).add(key))
 
-    const { data, error } = await supabase.rpc('set_ticket_award', { p_ticket_id: row.id, p_delivered: delivered })
+    const { data, error } =
+      row.kind === 'ticket'
+        ? await supabase.rpc('set_ticket_award', { p_ticket_id: row.id, p_delivered: delivered })
+        : await supabase.rpc('set_extra_person_award', { p_person_id: row.id, p_delivered: delivered })
 
     setSaving((prev) => {
       const next = new Set(prev)
-      next.delete(row.id)
+      next.delete(key)
       return next
     })
-    const result = data as SetTicketAwardResult | null
+    const result = data as { ok: true; delivered_at: string | null } | { ok: false } | null
     if (error || !result?.ok) {
-      setRowAward(row.id, previous)
+      setRowDelivered(key, previous)
       setError(error?.message ?? `No se pudo guardar la entrega de ${row.name || 'sin nombre'}.`)
       return
     }
-    setRowAward(row.id, result.delivered_at ? { delivered_at: result.delivered_at } : null)
+    setRowDelivered(key, result.delivered_at)
   }
 
   const resetFilters = () => {
@@ -210,47 +293,51 @@ export function PremiacionPage() {
   }
 
   // Grupo completo (sin filtros), en orden de llamado: de aquí sale el número de cada leyenda
-  const fullGroup = (years: LeyendaYears | null) =>
-    rows.filter((r) => ticketYears(r) === years).sort(byCallOrder)
+  const fullGroup = (years: LeyendaYears | null) => rows.filter((r) => r.years === years).sort(byCallOrder)
 
   /** Mueve una leyenda a otra posición dentro de su grupo de años y guarda el orden del grupo */
   const moveTo = async (row: AwardRow, newIndex: number) => {
-    const years = ticketYears(row)
-    const group = fullGroup(years)
-    const from = group.findIndex((r) => r.id === row.id)
+    const group = fullGroup(row.years)
+    const from = group.findIndex((r) => rowKey(r) === rowKey(row))
     const to = Math.min(Math.max(newIndex, 0), group.length - 1)
     if (from === -1 || from === to) return
 
     const reordered = [...group]
     reordered.splice(from, 1)
     reordered.splice(to, 0, row)
-    const ids = reordered.map((r) => r.id)
 
     // Al instante en pantalla: posiciones 1, 2, 3… para todo el grupo
-    const positions = new Map(ids.map((id, i) => [id, i + 1]))
-    setRows((prev) =>
-      prev.map((r) => (positions.has(r.id) ? { ...r, ticket_award_order: { position: positions.get(r.id)! } } : r)),
-    )
+    const positions = new Map(reordered.map((r, i) => [rowKey(r), i + 1]))
+    setRows((prev) => prev.map((r) => (positions.has(rowKey(r)) ? { ...r, position: positions.get(rowKey(r))! } : r)))
+
+    // Se guardan juntas las de QR y las de listas
+    const tickets = reordered.flatMap((r, i) => (r.kind === 'ticket' ? [{ id: r.id, pos: i + 1 }] : []))
+    const extras = reordered.flatMap((r, i) => (r.kind === 'extra' ? [{ id: r.id, pos: i + 1 }] : []))
+
     setError(null)
-    setSavingGroup(years)
-    const { data, error } = await supabase.rpc('set_award_order', { p_ticket_ids: ids })
+    setSavingGroup(row.years)
+    const { data, error } = await supabase.rpc('set_award_order_mixed', {
+      p_ticket_ids: tickets.map((t) => t.id),
+      p_ticket_positions: tickets.map((t) => t.pos),
+      p_person_ids: extras.map((e) => e.id),
+      p_person_positions: extras.map((e) => e.pos),
+    })
     setSavingGroup(undefined)
-    if (error || !(data as SetAwardOrderResult | null)?.ok) {
+    if (error || !(data as { ok: boolean } | null)?.ok) {
       setError(error?.message ?? 'No se pudo guardar el orden. Se recargó la lista.')
       void loadRows(eventId)
     }
   }
 
-  const deliveredCount = rows.filter((r) => r.ticket_awards).length
+  const deliveredCount = rows.filter((r) => r.deliveredAt).length
   const percent = rows.length > 0 ? Math.round((deliveredCount / rows.length) * 100) : 0
   const hasFilters = awardFilter !== 'all' || presenceFilter !== 'all' || search.trim() !== ''
 
   // Tabla agrupada por años; cada grupo muestra solo las filas que pasan los filtros
   const groups = GROUPS.map((years) => {
     const all = fullGroup(years)
-    const visible = filterTickets(
-      all.filter((r) => matchesAward(r, awardFilter) && matchesPresence(r, presenceFilter)),
-      search,
+    const visible = all.filter(
+      (r) => matchesAward(r, awardFilter) && matchesPresence(r, presenceFilter) && matchesSearch(r, search),
     )
     return { years, all, visible }
   }).filter((g) => g.visible.length > 0)
@@ -260,7 +347,7 @@ export function PremiacionPage() {
   const callNumber = new Map<string, { index: number; size: number }>()
   for (const years of GROUPS) {
     const all = fullGroup(years)
-    all.forEach((r, index) => callNumber.set(r.id, { index, size: all.length }))
+    all.forEach((r, index) => callNumber.set(rowKey(r), { index, size: all.length }))
   }
 
   const columns: Column<AwardRow>[] = [
@@ -269,7 +356,7 @@ export function PremiacionPage() {
       header: '#',
       className: 'w-px whitespace-nowrap',
       render: (r) => {
-        const { index, size } = callNumber.get(r.id) ?? { index: 0, size: 1 }
+        const { index, size } = callNumber.get(rowKey(r)) ?? { index: 0, size: 1 }
         if (!ordering) {
           return <span className="text-lg font-bold tabular-nums text-muted">{index + 1}</span>
         }
@@ -316,10 +403,18 @@ export function PremiacionPage() {
       header: 'Nombre',
       render: (r) => (
         <div className="min-w-0">
-          <p className={r.name ? 'font-medium' : 'italic text-muted'}>{r.name || 'Sin nombre'}</p>
+          <p className={r.name ? 'font-medium' : 'italic text-muted'}>
+            {r.name || 'Sin nombre'}
+            {/* Leyenda de una lista (sin QR) */}
+            {r.listName && (
+              <span className="ml-2 rounded-full bg-surface-strong px-2 py-0.5 text-xs font-semibold text-foreground-soft">
+                Lista · {r.listName}
+              </span>
+            )}
+          </p>
           {/* Si la leyenda ya entró al evento */}
-          <p className={`text-xs ${r.used_at ? 'text-success' : 'font-semibold text-warning'}`}>
-            {r.used_at ? 'Presente' : 'Ausente'}
+          <p className={`text-xs ${r.present ? 'text-success' : 'font-semibold text-warning'}`}>
+            {r.present ? 'Presente' : 'Ausente'}
           </p>
         </div>
       ),
@@ -328,14 +423,19 @@ export function PremiacionPage() {
       key: 'years',
       header: 'Años',
       className: 'whitespace-nowrap',
-      render: (r) => <YearsCell row={r} />,
+      render: (r) =>
+        r.years ? (
+          <span className="font-semibold tabular-nums">{r.years} años</span>
+        ) : (
+          <span className="text-muted">—</span>
+        ),
     },
     {
       key: 'award',
       header: 'Reconocimiento',
       className: 'w-px whitespace-nowrap',
       render: (r) => {
-        const delivered = Boolean(r.ticket_awards)
+        const delivered = Boolean(r.deliveredAt)
         return (
           <div className="flex items-center gap-3">
             <button
@@ -344,7 +444,7 @@ export function PremiacionPage() {
               aria-checked={delivered}
               aria-label={`Reconocimiento entregado a ${r.name || 'sin nombre'}`}
               onClick={() => void toggleAward(r)}
-              disabled={saving.has(r.id)}
+              disabled={saving.has(rowKey(r))}
               className={`relative h-8 w-14 shrink-0 rounded-full transition-colors disabled:opacity-60 ${
                 delivered ? 'bg-success' : 'bg-surface-hover'
               }`}
@@ -356,7 +456,7 @@ export function PremiacionPage() {
               />
             </button>
             <span className={`w-20 text-xs font-semibold ${delivered ? 'text-success' : 'text-muted'}`}>
-              {delivered && r.ticket_awards ? `Entregado ${formatTime(r.ticket_awards.delivered_at)}` : 'Sin entregar'}
+              {r.deliveredAt ? `Entregado ${formatTime(r.deliveredAt)}` : 'Sin entregar'}
             </span>
           </div>
         )
@@ -372,10 +472,11 @@ export function PremiacionPage() {
     }`
 
   return (
-    <div className="mx-auto w-full max-w-2xl space-y-6 p-4">
+    <div className={`${PAGE_WIDTH} space-y-6 py-4`}>
       <section className="space-y-4 rounded-2xl bg-surface p-4">
         <div>
-          <h1 className="text-xl font-bold">Premiación</h1>
+          {/* En web el título va en la barra superior */}
+          <h1 className="text-xl font-bold md:hidden">Premiación</h1>
           <p className="text-sm text-muted">
             Toca el interruptor para marcar el reconocimiento (trofeo y kit) como entregado. Se guarda al
             instante.
@@ -494,7 +595,7 @@ export function PremiacionPage() {
             </div>
           )}
 
-          {/* Filtros por presencia (escaneadas en la entrada o no) */}
+          {/* Filtros por presencia (ya entraron al evento o no) */}
           {rows.length > 0 && (
             <div className="flex flex-wrap gap-2" role="group" aria-label="Filtrar por presencia">
               {presenceOptions.map((o) => (
@@ -519,14 +620,14 @@ export function PremiacionPage() {
             <Table
               columns={columns}
               rows={[]}
-              getRowKey={(r) => r.id}
+              getRowKey={rowKey}
               loading={loading}
               emptyMessage={
                 search.trim()
                   ? `Ningún nombre coincide con “${search.trim()}”.`
                   : hasFilters
                     ? 'No hay leyendas con estos filtros.'
-                    : 'Este evento no tiene QR.'
+                    : 'Este evento no tiene leyendas.'
               }
             />
           ) : (
@@ -553,7 +654,7 @@ export function PremiacionPage() {
                 const key = groupKey(g.years)
                 // Con una búsqueda escrita se abren solos, para ver dónde está el resultado
                 const open = openGroups.has(key) || search.trim() !== ''
-                const delivered = g.all.filter((r) => r.ticket_awards).length
+                const delivered = g.all.filter((r) => r.deliveredAt).length
                 return (
                   <div key={key} className="overflow-hidden rounded-2xl border border-line">
                     <button
@@ -594,7 +695,7 @@ export function PremiacionPage() {
                         {delivered}/{g.all.length} entregados
                       </span>
                     </button>
-                    {open && <Table columns={columns} rows={g.visible} getRowKey={(r) => r.id} />}
+                    {open && <Table columns={columns} rows={g.visible} getRowKey={rowKey} />}
                   </div>
                 )
               })}

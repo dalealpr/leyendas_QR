@@ -6,8 +6,8 @@ import { ContadorPage } from '../pages/ContadorPage'
 import { GenerarPage } from '../pages/GenerarPage'
 import { EditarPage } from '../pages/EditarPage'
 import { EscanearPage } from '../pages/EscanearPage'
-import { AniosPage } from '../pages/AniosPage'
 import { PremiacionPage } from '../pages/PremiacionPage'
+import { ListasPage } from '../pages/ListasPage'
 import { useAuth } from '../context/auth-context'
 import { homeFor } from '../utils/roles'
 
@@ -29,14 +29,13 @@ export function AppRouter() {
 
             <Route element={<ProtectedRoute allow={['admin', 'dashboard', 'scanner']} />}>
               <Route path="/contador" element={<ContadorPage />} />
-              <Route path="/invitados" element={<ContadorPage key="invitados" tableOnly />} />
             </Route>
 
             <Route element={<ProtectedRoute allow={['admin']} />}>
               <Route path="/generar" element={<GenerarPage />} />
               <Route path="/editar" element={<EditarPage />} />
-              <Route path="/anios" element={<AniosPage />} />
               <Route path="/premiacion" element={<PremiacionPage />} />
+              <Route path="/listas" element={<ListasPage />} />
             </Route>
           </Route>
         </Route>

@@ -3,17 +3,20 @@ import { supabase } from '../lib/supabase'
 import { useAuth } from '../context/auth-context'
 import { useActiveEvent } from '../hooks/useActiveEvent'
 import { Table, type Column } from '../components/ui/Table'
+import { LuCircleCheck, LuTrophy } from 'react-icons/lu'
 import { GuestBadge } from '../components/common/GuestBadge'
 import { YearsCell } from '../components/common/YearsCell'
 import { SearchInput } from '../components/ui/SearchInput'
 import { ilikePattern, normalize } from '../utils/search'
+import { PAGE_WIDTH } from '../utils/layout'
 import { countClass } from '../utils/filterChip'
-import { AddGuestDialog } from '../components/common/AddGuestDialog'
+import { extraErrors, type ExtraGroup, type ExtraPerson, type ExtraResult } from '../types/extraLists'
 import {
   YEARS_OPTIONS,
   type EventStats,
   type LeyendaYears,
   type Ticket,
+  type WithAward,
   type WithGuestDeclined,
   type WithGuestName,
   type WithYears,
@@ -30,7 +33,8 @@ const PAGE_SIZE = 10
 type TicketRow = Pick<Ticket, 'id' | 'name' | 'event_id' | 'used_at' | 'guest_at' | 'created_at'> &
   WithYears &
   WithGuestName &
-  WithGuestDeclined
+  WithGuestDeclined &
+  WithAward
 
 /** Filtro de la tabla por status */
 type StatusFilter =
@@ -53,17 +57,10 @@ const statusOptions: StatusOption[] = [
   { value: 'used_guest_pending', label: 'Escaneados · invitado pendiente', guests: true },
   // El invitado llegó primero y la leyenda todavía no se escanea
   { value: 'unused_guest_in', label: 'Sin escanear · invitado dentro', guests: true },
+  // Leyenda sin escanear y sin invitado registrado (el invitado se agrega en Editar)
+  { value: 'unused_no_guest', label: 'Sin invitado agregado', guests: true },
   // Se escaneó "Sin invitado": su invitado no viene
   { value: 'guest_declined', label: 'Sin invitado (no viene)', guests: true },
-]
-
-/** Ventana Invitados (todas son leyendas sin escanear) */
-const invitadosStatusOptions: StatusOption[] = [
-  { value: 'all', label: 'Todos' },
-  { value: 'unused_guest_in', label: 'Sin escanear · invitado dentro', guests: true },
-  { value: 'unused_no_guest', label: 'Sin invitado agregado', guests: true },
-  // La leyenda ya entró y su invitado llega después
-  { value: 'used_guest_pending', label: 'Escaneados · invitado pendiente', guests: true },
 ]
 
 /** Filtro de la tabla por años de la leyenda */
@@ -83,15 +80,7 @@ function formatDate(iso: string): string {
   })
 }
 
-interface ContadorPageProps {
-  /**
-   * Ventana Invitados: solo la tabla con el buscador y los filtros de status
-   * (sin cards, sin desglose por evento y sin filtros de años).
-   */
-  tableOnly?: boolean
-}
-
-export function ContadorPage({ tableOnly = false }: ContadorPageProps) {
+export function ContadorPage() {
   const { role } = useAuth()
   // admin y dashboard eligen evento; el resto solo ve el evento activo
   const canChooseEvent = role === 'admin' || role === 'dashboard'
@@ -153,12 +142,8 @@ export function ContadorPage({ tableOnly = false }: ContadorPageProps) {
     .filter((s) => s.guests_enabled && (effectiveFilter === ALL || s.event_id === effectiveFilter))
     .map((s) => s.event_id)
     .join(',')
-  const shownStatusOptions = tableOnly ? invitadosStatusOptions : statusOptions
-  const isGuestFilter = shownStatusOptions.some((o) => o.guests && o.value === statusFilter)
+  const isGuestFilter = statusOptions.some((o) => o.guests && o.value === statusFilter)
   const effectiveStatus: StatusFilter = isGuestFilter && !guestEventIds ? 'all' : statusFilter
-
-  // Ventana Invitados: leyenda a la que se le está agregando el invitado
-  const [addGuestFor, setAddGuestFor] = useState<TicketRow | null>(null)
 
   const changeStatusFilter = (value: StatusFilter) => {
     setStatusFilter(value)
@@ -215,23 +200,12 @@ export function ContadorPage({ tableOnly = false }: ContadorPageProps) {
     let query = supabase
       .from('tickets')
       .select(
-        `id, name, event_id, used_at, guest_at, created_at, ${yearsJoin}, ticket_guest_names(guest_name), ticket_guest_declined(declined_at)`,
+        `id, name, event_id, used_at, guest_at, created_at, ${yearsJoin}, ticket_guest_names(guest_name), ticket_guest_declined(declined_at), ticket_awards(delivered_at)`,
         { count: 'exact' },
       )
       .order('created_at', { ascending: false })
       .range(from, from + PAGE_SIZE - 1)
     if (effectiveFilter !== ALL) query = query.eq('event_id', effectiveFilter)
-    // Ventana Invitados, "Todos": lo que todavía falta por entrar →
-    //   leyendas sin escanear + leyendas escaneadas cuyo invitado todavía puede llegar
-    //   (solo en eventos con invitados; las marcadas "Sin invitado" no esperan a nadie).
-    // Los demás filtros de la ventana ya dicen si la leyenda está escaneada o no.
-    if (tableOnly && effectiveStatus === 'all') {
-      query = guestEventIds
-        ? query
-            .or(`used_at.is.null,and(guest_at.is.null,event_id.in.(${guestEventIds}))`)
-            .is('ticket_guest_declined', null)
-        : query.is('used_at', null)
-    }
     if (typeof yearsFilter === 'number') query = query.eq('ticket_years.years', yearsFilter)
     if (effectiveStatus === 'used') query = query.not('used_at', 'is', null)
     if (effectiveStatus !== 'all' && effectiveStatus !== 'used') {
@@ -263,7 +237,7 @@ export function ContadorPage({ tableOnly = false }: ContadorPageProps) {
     }
     setTicketRows(data)
     setTicketTotal(count ?? 0)
-  }, [page, effectiveFilter, effectiveStatus, guestEventIds, yearsFilter, debouncedSearch, tableOnly])
+  }, [page, effectiveFilter, effectiveStatus, guestEventIds, yearsFilter, debouncedSearch])
 
   // Siempre apunta a la última versión, para usarla desde Realtime
   const loadTicketsRef = useRef(loadTickets)
@@ -299,6 +273,53 @@ export function ContadorPage({ tableOnly = false }: ContadorPageProps) {
     setUpdatedAt(new Date())
   }, [])
 
+  // Listas (personas sin QR agregadas a mano, ver supabase/19_extra_lists.sql)
+  const [extraGroups, setExtraGroups] = useState<ExtraGroup[]>([])
+  const loadExtras = useCallback(async () => {
+    if (effectiveFilter === null) {
+      setExtraGroups([])
+      return
+    }
+    let query = supabase
+      .from('extra_groups')
+      .select('id, event_id, name, sort_order, extra_people(*)')
+      .order('sort_order')
+      .order('created_at', { referencedTable: 'extra_people' })
+    if (effectiveFilter !== ALL) query = query.eq('event_id', effectiveFilter)
+    const { data, error } = await query.returns<ExtraGroup[]>()
+    if (error) {
+      setError(error.message)
+      return
+    }
+    setExtraGroups(data)
+  }, [effectiveFilter])
+
+  // Siempre apunta a la última versión, para usarla desde Realtime
+  const loadExtrasRef = useRef(loadExtras)
+  useEffect(() => {
+    loadExtrasRef.current = loadExtras
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- recarga al cambiar de evento
+    void loadExtras()
+  }, [loadExtras])
+
+  /** Marcar / desmarcar a mano el ingreso de una persona de una lista */
+  const toggleExtraEntry = async (person: ExtraPerson) => {
+    const { data, error } = await supabase.rpc('set_extra_person_entry', {
+      p_person_id: person.id,
+      p_entered: !person.entered_at,
+    })
+    if (error) {
+      setError(error.message)
+      return
+    }
+    const result = data as ExtraResult
+    if (!result.ok) {
+      setError(extraErrors[result.reason])
+      return
+    }
+    await loadExtras()
+  }
+
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- carga inicial desde Supabase
     void loadStats()
@@ -310,18 +331,21 @@ export function ContadorPage({ tableOnly = false }: ContadorPageProps) {
         void loadStats()
         void loadTicketsRef.current()
         void loadYearCountsRef.current()
+        void loadExtrasRef.current()
       }, 500)
     }
 
     const channel = supabase
       .channel('tickets-contador')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'tickets' }, scheduleRefresh)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'extra_people' }, scheduleRefresh)
       .subscribe((status) => setLive(status === 'SUBSCRIBED'))
 
     const poll = window.setInterval(() => {
       void loadStats()
       void loadTicketsRef.current()
       void loadYearCountsRef.current()
+      void loadExtrasRef.current()
     }, POLL_MS)
 
     return () => {
@@ -343,8 +367,6 @@ export function ContadorPage({ tableOnly = false }: ContadorPageProps) {
     effectiveFilter === ALL ? rows : rows.filter((s) => s.event_id === effectiveFilter)
   const total = shown.reduce((sum, s) => sum + s.total, 0)
   const used = shown.reduce((sum, s) => sum + s.used, 0)
-  const pending = total - used
-  const percent = total > 0 ? Math.round((used / total) * 100) : 0
   const value = (n: number) => (stats ? n : '–')
   const eventName = (id: string) => rows.find((s) => s.event_id === id)?.event_name ?? id
   const isActive = (id: string) => activeEvent?.id === id
@@ -369,9 +391,25 @@ export function ContadorPage({ tableOnly = false }: ContadorPageProps) {
   const unusedNoGuest = withGuests.reduce((sum, s) => sum + s.total - s.used, 0) - guestsFirst
   const guestsPercent = guestsTotal > 0 ? Math.round((guestsIn / guestsTotal) * 100) : 0
 
-  // Total asistentes: leyendas + invitados (sin contar a los invitados que no vienen)
-  const peopleTotal = total + guestsTotal
-  const peopleIn = used + guestsIn
+  // Listas: las personas incluidas como leyenda suman a la card Leyendas; el resto, solo al total
+  const extraPeople = extraGroups.flatMap((g) => g.extra_people)
+  const extraLeyendas = extraPeople.filter((p) => p.is_leyenda)
+  const extraLeyendasIn = extraLeyendas.filter((p) => p.entered_at).length
+  const extraOthers = extraPeople.filter((p) => !p.is_leyenda)
+  const extraOthersIn = extraOthers.filter((p) => p.entered_at).length
+  const hasExtras = extraPeople.length > 0
+
+  // Card Leyendas: leyendas con QR + leyendas de listas
+  const leyTotal = total + extraLeyendas.length
+  const leyUsed = used + extraLeyendasIn
+  const leyPending = leyTotal - leyUsed
+  const leyPercent = leyTotal > 0 ? Math.round((leyUsed / leyTotal) * 100) : 0
+
+  // Total asistentes: leyendas + invitados (sin los que no vienen) + personas de listas
+  const peopleTotal = leyTotal + guestsTotal + extraOthers.length
+  const peopleIn = leyUsed + guestsIn + extraOthersIn
+  // Card Total asistentes: con invitados o con listas
+  const showPeopleCard = withGuests.length > 0 || hasExtras
   const peoplePercent = peopleTotal > 0 ? Math.round((peopleIn / peopleTotal) * 100) : 0
   // Ancho de cada tramo de la barra, sobre el total de asistentes
   const share = (n: number) => (peopleTotal > 0 ? (n / peopleTotal) * 100 : 0)
@@ -412,46 +450,8 @@ export function ContadorPage({ tableOnly = false }: ContadorPageProps) {
           </span>
         ),
     },
-    // Ventana Invitados: registrar al invitado que llega antes que su leyenda
-    ...(tableOnly && withGuests.length > 0
-      ? [
-          {
-            key: 'guest',
-            header: 'Invitado',
-            className: 'w-px whitespace-nowrap text-right',
-            render: (t: TicketRow) => {
-              if (!hasGuests(t.event_id)) return <span className="text-muted">—</span>
-              // Se escaneó "Sin invitado": bloqueado, solo el admin lo cambia en Editar
-              if (t.ticket_guest_declined && !t.guest_at) return <GuestBadge ticket={t} declined />
-              if (t.guest_at) {
-                return (
-                  <span className="inline-flex flex-col items-end">
-                    <span className="w-fit rounded-full bg-success/15 px-2 py-1 text-xs font-semibold text-success">
-                      Ingresado
-                    </span>
-                    <span className="mt-1 max-w-40 truncate text-xs text-muted">
-                      {t.ticket_guest_names?.guest_name ? `${t.ticket_guest_names.guest_name} · ` : ''}
-                      {formatDate(t.guest_at)}
-                    </span>
-                  </span>
-                )
-              }
-              return (
-                <button
-                  type="button"
-                  onClick={() => setAddGuestFor(t)}
-                  aria-label={`Agregar invitado de ${t.name || 'sin nombre'}`}
-                  className="rounded-lg border border-primary px-3 py-2 text-xs font-semibold text-primary hover:bg-primary/15"
-                >
-                  + Agregar
-                </button>
-              )
-            },
-          },
-        ]
-      : []),
     // Invitado: solo si algún evento visible tiene invitados activados
-    ...(!tableOnly && withGuests.length > 0
+    ...(withGuests.length > 0
       ? [
           {
             key: 'guest',
@@ -468,11 +468,34 @@ export function ContadorPage({ tableOnly = false }: ContadorPageProps) {
           },
         ]
       : []),
+    // Reconocimiento (Premiación): ✓ verde si se entregó, — si no
+    {
+      key: 'award',
+      header: (
+        <span title="Reconocimiento entregado" className="inline-flex">
+          <LuTrophy className="h-4 w-4" aria-hidden="true" />
+          <span className="sr-only">Reconocimiento</span>
+        </span>
+      ),
+      className: 'w-px text-center',
+      render: (t: TicketRow) =>
+        t.ticket_awards ? (
+          <span title={`Entregado ${formatDate(t.ticket_awards.delivered_at)}`} className="inline-flex">
+            <LuCircleCheck className="h-5 w-5 text-success" aria-hidden="true" />
+            <span className="sr-only">Entregado</span>
+          </span>
+        ) : (
+          <span title="Sin entregar" className="text-muted">
+            —<span className="sr-only">Sin entregar</span>
+          </span>
+        ),
+    },
   ]
 
   const header = (
-    <div className="flex items-center justify-between">
-      <h1 className="text-xl font-bold">{tableOnly ? 'Invitados' : 'Ingresos'}</h1>
+    // En web el título va en la barra superior: aquí solo queda el indicador "En vivo", a la derecha
+    <div className="flex items-center justify-between md:justify-end">
+      <h1 className="text-xl font-bold md:hidden">Ingresos</h1>
       <span className="flex items-center gap-2 text-xs text-muted">
         <span className={`h-2 w-2 rounded-full ${live ? 'bg-success' : 'bg-surface-hover'}`} />
         {live ? 'En vivo' : 'Actualizando cada 15 s'}
@@ -498,7 +521,7 @@ export function ContadorPage({ tableOnly = false }: ContadorPageProps) {
   }
 
   return (
-    <div className="mx-auto flex w-full max-w-2xl flex-1 flex-col gap-6 p-4 tablet-landscape:max-w-5xl">
+    <div className={`${PAGE_WIDTH} flex flex-1 flex-col gap-6 py-4`}>
       {header}
 
       {canChooseEvent ? (
@@ -534,18 +557,32 @@ export function ContadorPage({ tableOnly = false }: ContadorPageProps) {
         </p>
       )}
 
-      {/* En tablet horizontal: escaneados a la izquierda, invitados a la derecha */}
-      {!tableOnly && (
+      {/* Cards: tablet horizontal → Leyendas | Invitados y Total abajo; web ancha → las 3 en una fila */}
         <div
-          className={`flex flex-col gap-6 ${withGuests.length > 0 ? 'tablet-landscape:grid tablet-landscape:grid-cols-2' : ''}`}
+          className={`flex flex-col gap-6 ${
+            withGuests.length > 0
+              ? 'tablet-landscape:grid tablet-landscape:grid-cols-2 desktop:grid-cols-3'
+              : hasExtras
+                ? 'tablet-landscape:grid tablet-landscape:grid-cols-2'
+                : ''
+          }`}
         >
           <CountCard
             title="Leyendas"
-            total={value(total)}
-            done={{ label: 'Escaneados', value: value(used), className: 'text-success' }}
-            pending={value(pending)}
-            percent={percent}
+            total={value(leyTotal)}
+            done={{ label: 'Escaneados', value: value(leyUsed), className: 'text-success' }}
+            pending={value(leyPending)}
+            percent={leyPercent}
             barClassName="bg-success"
+            // Leyendas de listas (sin QR): ya sumadas arriba
+            extra={
+              extraLeyendas.length > 0 && (
+                <p className="mt-3 text-sm text-muted">
+                  Incluye <strong className="font-bold text-foreground">{extraLeyendas.length}</strong>{' '}
+                  {extraLeyendas.length === 1 ? 'leyenda' : 'leyendas'} de listas ({extraLeyendasIn} ingresadas)
+                </p>
+              )
+            }
           />
 
           {/* Invitados (solo eventos con invitados activados) */}
@@ -584,12 +621,16 @@ export function ContadorPage({ tableOnly = false }: ContadorPageProps) {
               }
             />
           )}
-        </div>
-      )}
 
-      {/* Total asistentes (leyendas + invitados), a todo el ancho */}
-      {!tableOnly && withGuests.length > 0 && (
-        <section className="rounded-2xl bg-surface px-5 py-6 tablet-landscape:py-8">
+          {/* Total asistentes (leyendas + invitados + listas):
+              con invitados → tablet: fila completa debajo; web ancha: tercera card de la fila.
+              sin invitados (solo listas) → al lado de Leyendas */}
+          {showPeopleCard && (
+        <section
+          className={`rounded-2xl bg-surface px-5 py-6 tablet-landscape:py-8 ${
+            withGuests.length > 0 ? 'tablet-landscape:col-span-2 desktop:col-span-1' : ''
+          }`}
+        >
           <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
             <p className="flex items-center gap-2 text-base font-medium uppercase tracking-wide text-foreground-soft tablet-landscape:text-lg">
               Total asistentes
@@ -598,7 +639,9 @@ export function ContadorPage({ tableOnly = false }: ContadorPageProps) {
               </span>
             </p>
             <p className="tabular-nums">
-              <span className="text-4xl font-bold text-success tablet-landscape:text-5xl">{value(peopleIn)}</span>
+              <span className="text-4xl font-bold text-success tablet-landscape:text-5xl desktop:text-6xl">
+                {value(peopleIn)}
+              </span>
               <span className="text-lg text-muted"> / {value(peopleTotal)}</span>
               <span className="ml-3 text-lg font-semibold text-foreground-soft">{peoplePercent}%</span>
             </p>
@@ -610,35 +653,67 @@ export function ContadorPage({ tableOnly = false }: ContadorPageProps) {
             role="img"
             aria-label={`${peopleIn} de ${peopleTotal} asistentes ingresados`}
           >
-            <div className="h-full bg-success transition-all duration-500" style={{ width: `${share(used)}%` }} />
+            <div className="h-full bg-success transition-all duration-500" style={{ width: `${share(leyUsed)}%` }} />
             <div className="h-full bg-primary transition-all duration-500" style={{ width: `${share(guestsIn)}%` }} />
+            <div
+              className="h-full bg-foreground-soft transition-all duration-500"
+              style={{ width: `${share(extraOthersIn)}%` }}
+            />
           </div>
 
           <div className="mt-3 flex flex-wrap gap-x-5 gap-y-1 text-sm text-foreground-soft">
             <span className="flex items-center gap-2">
               <span className="h-3 w-3 rounded-full bg-success" aria-hidden="true" />
-              Leyendas <strong className="tabular-nums text-foreground">{value(used)}</strong>
+              Leyendas <strong className="tabular-nums text-foreground">{value(leyUsed)}</strong>
             </span>
-            <span className="flex items-center gap-2">
-              <span className="h-3 w-3 rounded-full bg-primary" aria-hidden="true" />
-              Invitados <strong className="tabular-nums text-foreground">{value(guestsIn)}</strong>
-            </span>
+            {withGuests.length > 0 && (
+              <span className="flex items-center gap-2">
+                <span className="h-3 w-3 rounded-full bg-primary" aria-hidden="true" />
+                Invitados <strong className="tabular-nums text-foreground">{value(guestsIn)}</strong>
+              </span>
+            )}
+            {extraOthers.length > 0 && (
+              <span className="flex items-center gap-2">
+                <span className="h-3 w-3 rounded-full bg-foreground-soft" aria-hidden="true" />
+                Listas <strong className="tabular-nums text-foreground">{extraOthersIn}</strong>
+              </span>
+            )}
             <span className="flex items-center gap-2">
               <span className="h-3 w-3 rounded-full bg-background ring-1 ring-line" aria-hidden="true" />
               Pendientes{' '}
               <strong className="tabular-nums text-warning">{value(peopleTotal - peopleIn)}</strong>
             </span>
             {/* Solo informativo: no está en la barra ni en el total */}
-            <span className="flex items-center gap-2">
-              <span className="h-3 w-3 rounded-full border border-dashed border-muted" aria-hidden="true" />
-              Leyendas sin invitado <strong className="tabular-nums text-foreground">{value(guestsDeclined)}</strong>
-            </span>
+            {withGuests.length > 0 && (
+              <span className="flex items-center gap-2">
+                <span className="h-3 w-3 rounded-full border border-dashed border-muted" aria-hidden="true" />
+                Leyendas sin invitado <strong className="tabular-nums text-foreground">{value(guestsDeclined)}</strong>
+              </span>
+            )}
+          </div>
+        </section>
+          )}
+        </div>
+
+      {/* Listas: una tabla por lista (personas sin QR agregadas a mano en la ventana Listas) */}
+      {extraGroups.length > 0 && (
+        <section className="space-y-3">
+          <h2 className="text-sm font-semibold uppercase tracking-wide text-foreground-soft">Listas</h2>
+          <div className="grid gap-4 desktop:grid-cols-2">
+            {extraGroups.map((g) => (
+              <ExtraGroupTable
+                key={g.id}
+                group={g}
+                eventLabel={effectiveFilter === ALL ? eventName(g.event_id) : null}
+                onToggleEntry={(p) => void toggleExtraEntry(p)}
+              />
+            ))}
           </div>
         </section>
       )}
 
       {/* Desglose por evento (admin y dashboard, en "Todos los eventos") */}
-      {!tableOnly && canChooseEvent && filter === ALL && rows.length > 0 && (
+      {canChooseEvent && filter === ALL && rows.length > 0 && (
         <section className="space-y-2">
           <h2 className="text-sm font-semibold uppercase tracking-wide text-foreground-soft">Por evento</h2>
           <ul className="divide-y divide-line overflow-hidden rounded-2xl bg-surface">
@@ -678,19 +753,7 @@ export function ContadorPage({ tableOnly = false }: ContadorPageProps) {
         />
         <div className="flex items-center justify-between gap-2">
           <h2 className="truncate text-sm font-semibold uppercase tracking-wide text-foreground-soft">
-            {tableOnly ? (
-              <>
-                {effectiveStatus === 'used_guest_pending' ? 'Escaneadas · invitado pendiente' : 'Pendientes por ingresar'}
-                {effectiveFilter !== ALL && ` · ${eventName(effectiveFilter ?? '')}`}{' '}
-                <span className="text-warning tabular-nums">
-                  {value(effectiveStatus === 'used_guest_pending' ? guestsWaiting : pending + guestsWaiting)}
-                </span>
-              </>
-            ) : effectiveFilter === ALL ? (
-              'Todos los QR'
-            ) : (
-              `QR · ${eventName(effectiveFilter ?? '')}`
-            )}
+            {effectiveFilter === ALL ? 'Todos los QR' : `QR · ${eventName(effectiveFilter ?? '')}`}
           </h2>
           {/* Solo aparece si hay algún filtro o búsqueda puesta */}
           {(search || effectiveStatus !== 'all' || yearsFilter !== 'all') && (
@@ -709,41 +772,38 @@ export function ContadorPage({ tableOnly = false }: ContadorPageProps) {
           )}
         </div>
 
-        {/* Filtros por status (la ventana Invitados tiene los suyos) */}
-        {(!tableOnly || guestEventIds) && (
-          <div className="flex flex-wrap gap-2" role="group" aria-label="Filtrar por status">
-            {shownStatusOptions
-              .filter((o) => !o.guests || guestEventIds)
-              .map((o) => {
-                const selected = effectiveStatus === o.value
-                const count = {
-                  // Ventana Invitados, "Todos": sin escanear + escaneadas con invitado por llegar
-                  all: tableOnly ? pending + guestsWaiting : total,
-                  used,
-                  guest_in: guestsIn,
-                  used_guest_pending: guestsWaiting,
-                  unused_guest_in: guestsFirst,
-                  unused_no_guest: unusedNoGuest,
-                  guest_declined: guestsDeclined,
-                }[o.value]
-                return (
-                  <button
-                    key={o.value}
-                    type="button"
-                    onClick={() => changeStatusFilter(o.value)}
-                    aria-pressed={selected}
-                    className={`rounded-full border px-3 py-1.5 text-sm font-semibold ${
-                      selected
-                        ? 'border-primary bg-primary text-on-primary'
-                        : 'border-line bg-surface text-foreground-soft hover:bg-surface-strong'
-                    }`}
-                  >
-                    {o.label} <span className={countClass(selected)}>{value(count)}</span>
-                  </button>
-                )
-              })}
-          </div>
-        )}
+        {/* Filtros por status */}
+        <div className="flex flex-wrap gap-2" role="group" aria-label="Filtrar por status">
+          {statusOptions
+            .filter((o) => !o.guests || guestEventIds)
+            .map((o) => {
+              const selected = effectiveStatus === o.value
+              const count = {
+                all: total,
+                used,
+                guest_in: guestsIn,
+                used_guest_pending: guestsWaiting,
+                unused_guest_in: guestsFirst,
+                unused_no_guest: unusedNoGuest,
+                guest_declined: guestsDeclined,
+              }[o.value]
+              return (
+                <button
+                  key={o.value}
+                  type="button"
+                  onClick={() => changeStatusFilter(o.value)}
+                  aria-pressed={selected}
+                  className={`rounded-full border px-3 py-1.5 text-sm font-semibold ${
+                    selected
+                      ? 'border-primary bg-primary text-on-primary'
+                      : 'border-line bg-surface text-foreground-soft hover:bg-surface-strong'
+                  }`}
+                >
+                  {o.label} <span className={countClass(selected)}>{value(count)}</span>
+                </button>
+              )
+            })}
+        </div>
 
         {/* Filtros por años de la leyenda */}
         <div className="flex flex-wrap gap-2" role="group" aria-label="Filtrar por años">
@@ -763,10 +823,7 @@ export function ContadorPage({ tableOnly = false }: ContadorPageProps) {
                 }`}
               >
                 {o.label}{' '}
-                {/* En la ventana Invitados los totales por años no coinciden con la lista: sin número */}
-                {!tableOnly && (
-                  <span className={countClass(selected)}>{stats && yearCounts ? count : '–'}</span>
-                )}
+                <span className={countClass(selected)}>{stats && yearCounts ? count : '–'}</span>
               </button>
             )
           })}
@@ -780,9 +837,7 @@ export function ContadorPage({ tableOnly = false }: ContadorPageProps) {
           emptyMessage={
             debouncedSearch
               ? `Ningún nombre coincide con “${search.trim()}”.`
-              : tableOnly && effectiveStatus === 'all'
-                ? 'No queda nadie por ingresar: leyendas e invitados completos.'
-                : effectiveStatus === 'all' && yearsFilter === 'all'
+              : effectiveStatus === 'all' && yearsFilter === 'all'
                 ? 'Todavía no hay QR para este evento.'
                 : 'No hay QR con estos filtros.'
           }
@@ -795,19 +850,81 @@ export function ContadorPage({ tableOnly = false }: ContadorPageProps) {
           Última actualización: {updatedAt.toLocaleTimeString('es')}
         </p>
       )}
+    </div>
+  )
+}
 
-      {addGuestFor && (
-        <AddGuestDialog
-          ticketId={addGuestFor.id}
-          leyendaName={addGuestFor.name}
-          onClose={() => setAddGuestFor(null)}
-          onAdded={() => {
-            setAddGuestFor(null)
-            void loadStats()
-            void loadTicketsRef.current()
-          }}
-        />
-      )}
+interface ExtraGroupTableProps {
+  group: ExtraGroup
+  /** Nombre del evento (solo en "Todos los eventos") */
+  eventLabel: string | null
+  onToggleEntry: (person: ExtraPerson) => void
+}
+
+/** Tabla de una lista en el Contador: nombre, tipo e ingreso (se marca a mano tocándolo) */
+function ExtraGroupTable({ group, eventLabel, onToggleEntry }: ExtraGroupTableProps) {
+  const people = group.extra_people
+  const entered = people.filter((p) => p.entered_at).length
+
+  const columns: Column<ExtraPerson>[] = [
+    {
+      key: 'name',
+      header: 'Nombre',
+      render: (p) => <span className="font-medium">{p.name}</span>,
+    },
+    {
+      key: 'type',
+      header: 'Tipo',
+      className: 'whitespace-nowrap',
+      render: (p) =>
+        p.is_leyenda ? (
+          <span className="rounded-full bg-primary/15 px-2 py-1 text-xs font-semibold text-primary">
+            Leyenda{p.years ? ` · ${p.years} años` : ''}
+          </span>
+        ) : (
+          <span className="text-xs text-muted">Participante</span>
+        ),
+    },
+    {
+      key: 'entry',
+      header: 'Ingreso',
+      className: 'w-px whitespace-nowrap',
+      render: (p) => (
+        <button
+          type="button"
+          onClick={() => onToggleEntry(p)}
+          title={p.entered_at ? 'Marcar como pendiente' : 'Marcar ingreso'}
+          className="rounded-lg text-left hover:opacity-80"
+        >
+          {p.entered_at ? (
+            <span className="inline-flex flex-col">
+              <span className="w-fit rounded-full bg-success/15 px-2 py-1 text-xs font-semibold text-success">
+                Ingresado
+              </span>
+              <span className="mt-1 text-xs text-muted">{formatDate(p.entered_at)}</span>
+            </span>
+          ) : (
+            <span className="rounded-full bg-warning/15 px-2 py-1 text-xs font-semibold text-warning">
+              Pendiente · marcar
+            </span>
+          )}
+        </button>
+      ),
+    },
+  ]
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-baseline justify-between gap-2">
+        <h3 className="truncate text-base font-bold text-primary">
+          {group.name}
+          {eventLabel && <span className="ml-2 text-xs font-normal text-muted">{eventLabel}</span>}
+        </h3>
+        <span className="shrink-0 text-sm tabular-nums text-foreground-soft">
+          <strong className="text-success">{entered}</strong> / {people.length} ingresados
+        </span>
+      </div>
+      <Table columns={columns} rows={people} getRowKey={(p) => p.id} emptyMessage="Lista sin personas." />
     </div>
   )
 }
@@ -840,13 +957,16 @@ function CountCard({ title, total, done, pending, percent, barClassName, footer,
       <div className="mt-4 grid grid-cols-2 divide-x divide-line">
         <div>
           <p className="text-base text-foreground-soft tablet-landscape:text-lg">{done.label}</p>
-          <p className={`text-7xl font-bold tabular-nums tablet-landscape:text-9xl ${done.className}`}>
+          {/* Web ancha: 3 cards en fila → 112 px, lo más grande en que caben 3 cifras por columna */}
+          <p className={`text-7xl font-bold tabular-nums tablet-landscape:text-9xl desktop:text-[7rem] ${done.className}`}>
             {done.value}
           </p>
         </div>
         <div>
           <p className="text-base text-foreground-soft tablet-landscape:text-lg">Pendientes</p>
-          <p className="text-7xl font-bold tabular-nums text-warning tablet-landscape:text-9xl">{pending}</p>
+          <p className="text-7xl font-bold tabular-nums text-warning tablet-landscape:text-9xl desktop:text-[7rem]">
+            {pending}
+          </p>
         </div>
       </div>
 

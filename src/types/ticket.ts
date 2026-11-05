@@ -105,11 +105,6 @@ export function ticketYears(t: WithYears): LeyendaYears | null {
   return t.ticket_years?.years ?? null
 }
 
-/** Respuesta de supabase.rpc('set_ticket_years', { p_ticket_id, p_years }) */
-export type SetTicketYearsResult =
-  | { ok: true; years: LeyendaYears | null }
-  | { ok: false; reason: 'invalid' | 'not_found' }
-
 /** Datos que se envían al crear un ticket (el resto lo pone la base de datos) */
 export interface NewTicket {
   name: string | null

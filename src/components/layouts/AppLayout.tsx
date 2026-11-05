@@ -1,57 +1,170 @@
-import { NavLink, Outlet } from 'react-router-dom'
+import { useEffect, useState } from 'react'
+import { NavLink, Outlet, useLocation } from 'react-router-dom'
+import type { IconType } from 'react-icons'
+import {
+  LuChartColumn,
+  LuClipboardList,
+  LuLogOut,
+  LuMenu,
+  LuPencil,
+  LuQrCode,
+  LuScanLine,
+  LuTrophy,
+  LuX,
+} from 'react-icons/lu'
 import { useAuth } from '../../context/auth-context'
 import type { Role } from '../../types/auth'
 import logo from '../../assets/leyendas.jpg'
+import { PAGE_WIDTH } from '../../utils/layout'
 
-const links: { to: string; label: string; roles: Role[] }[] = [
-  { to: '/contador', label: 'Contador', roles: ['admin', 'dashboard', 'scanner'] },
-  { to: '/invitados', label: 'Invitados', roles: ['admin', 'dashboard', 'scanner'] },
-  { to: '/generar', label: 'Generar', roles: ['admin'] },
-  { to: '/editar', label: 'Editar', roles: ['admin'] },
-  { to: '/anios', label: 'Años', roles: ['admin'] },
-  { to: '/premiacion', label: 'Premiación', roles: ['admin'] },
-  { to: '/escanear', label: 'Escanear', roles: ['admin', 'dashboard', 'scanner'] },
+/** Ventanas del menú: ícono (colección Lucide de react-icons), nombre y quién la ve */
+const links: { to: string; label: string; icon: IconType; roles: Role[] }[] = [
+  { to: '/contador', label: 'Contador', icon: LuChartColumn, roles: ['admin', 'dashboard', 'scanner'] },
+  { to: '/generar', label: 'Generar', icon: LuQrCode, roles: ['admin'] },
+  { to: '/editar', label: 'Editar', icon: LuPencil, roles: ['admin'] },
+  { to: '/premiacion', label: 'Premiación', icon: LuTrophy, roles: ['admin'] },
+  { to: '/listas', label: 'Listas', icon: LuClipboardList, roles: ['admin'] },
+  { to: '/escanear', label: 'Escanear', icon: LuScanLine, roles: ['admin', 'dashboard', 'scanner'] },
 ]
+
+/** Estilo de cada ventana del menú; size = alto y tamaño de letra (la barra web y el panel de celular difieren) */
+const navItemClass = (isActive: boolean, size: string) =>
+  `flex items-center gap-3 rounded-lg px-3 font-semibold transition-colors ${size} ${
+    isActive ? 'bg-primary text-on-primary' : 'text-foreground-soft hover:bg-surface hover:text-primary'
+  }`
 
 export function AppLayout() {
   const { session, role, signOut } = useAuth()
   const visible = links.filter((l) => role && l.roles.includes(role))
+  // Celular: panel del menú abierto encima de la pantalla
+  const [mobileOpen, setMobileOpen] = useState(false)
+  const { pathname } = useLocation()
+  const current = visible.find((l) => pathname.startsWith(l.to))
+
+  // Panel de celular: se cierra con Escape y bloquea el scroll de la página mientras está abierto
+  useEffect(() => {
+    if (!mobileOpen) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setMobileOpen(false)
+    }
+    window.addEventListener('keydown', onKey)
+    const previousOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    return () => {
+      window.removeEventListener('keydown', onKey)
+      document.body.style.overflow = previousOverflow
+    }
+  }, [mobileOpen])
 
   return (
-    <div className="flex min-h-dvh flex-col bg-background text-foreground">
-      <header className="flex items-center justify-between gap-2 border-b border-line px-3 py-3 sm:px-4">
-        <div className="flex min-w-0 items-center gap-2 sm:gap-3">
-          <img src={logo} alt="Leyendas" className="h-9 w-9 shrink-0 rounded-lg object-cover" />
-          {/* En celulares angostos las pestañas se deslizan hacia el lado */}
-          <nav className="-my-1 flex min-w-0 gap-1 overflow-x-auto py-1">
+    <div className="flex min-h-dvh bg-background text-foreground">
+      {/* Web/tablet: barra lateral siempre desplegada (ícono + nombre), de arriba a abajo.
+          sticky + h-dvh: queda fija al bajar en páginas largas. */}
+      <aside className="sticky top-0 hidden h-dvh w-56 shrink-0 flex-col gap-2 border-r border-line px-3 py-4 md:flex">
+        <div className="mb-3 flex items-center gap-3">
+          <img src={logo} alt="Leyendas" className="h-10 w-10 shrink-0 rounded-lg object-cover" />
+          <span className="text-lg font-bold text-primary">Leyendas</span>
+        </div>
+        <nav className="flex flex-col gap-1" aria-label="Menú">
+          {visible.map((l) => (
+            <NavLink key={l.to} to={l.to} className={({ isActive }) => navItemClass(isActive, 'h-11 text-sm')}>
+              <l.icon className="h-5 w-5 shrink-0" aria-hidden="true" />
+              {l.label}
+            </NavLink>
+          ))}
+        </nav>
+      </aside>
+
+      <div className="flex min-w-0 flex-1 flex-col">
+        {/* Barra superior: correo y Salir, con el mismo ancho y márgenes que el contenido */}
+        <header className={`${PAGE_WIDTH} flex items-center justify-between gap-2 py-3 md:pb-3 md:pt-6`}>
+          {/* Celular: botón ☰ que abre el menú + logo y nombre de la ventana actual */}
+          <div className="flex min-w-0 items-center gap-2 md:hidden">
+            <button
+              type="button"
+              onClick={() => setMobileOpen(true)}
+              aria-label="Abrir menú"
+              aria-expanded={mobileOpen}
+              className="rounded-lg p-2 text-foreground-soft hover:bg-surface hover:text-primary"
+            >
+              <LuMenu className="h-6 w-6" aria-hidden="true" />
+            </button>
+            <img src={logo} alt="Leyendas" className="h-9 w-9 shrink-0 rounded-lg object-cover" />
+            {current && <span className="truncate font-semibold">{current.label}</span>}
+          </div>
+          {/* Web/tablet: nombre de la ventana actual (el menú está en la barra lateral) */}
+          <p className="hidden truncate text-3xl font-semibold md:block">{current?.label}</p>
+
+          <div className="flex shrink-0 items-center gap-3">
+            <span className="hidden text-xs text-muted sm:inline">{session?.user.email}</span>
+            <button
+              onClick={signOut}
+              className="flex items-center gap-2 rounded-lg bg-surface-strong px-3 py-2 text-sm font-semibold hover:bg-surface-hover"
+            >
+              <LuLogOut className="h-4 w-4" aria-hidden="true" />
+              Salir
+            </button>
+          </div>
+        </header>
+
+        <main className="flex min-w-0 flex-1 flex-col">
+          <Outlet />
+        </main>
+      </div>
+
+      {/* Celular: panel del menú encima de la pantalla, entra desde la izquierda.
+          Se cierra al elegir una ventana, con la ✕, tocando afuera o con Escape. */}
+      <div className={`fixed inset-0 z-50 md:hidden ${mobileOpen ? '' : 'pointer-events-none'}`} aria-hidden={!mobileOpen}>
+        {/* Fondo oscuro: tocarlo cierra el menú */}
+        <div
+          onClick={() => setMobileOpen(false)}
+          className={`absolute inset-0 bg-black/70 transition-opacity duration-200 ${
+            mobileOpen ? 'opacity-100' : 'opacity-0'
+          }`}
+        />
+        <aside
+          role="dialog"
+          aria-modal="true"
+          aria-label="Menú"
+          className={`absolute inset-y-0 left-0 flex w-64 max-w-[80vw] flex-col gap-2 border-r border-line bg-background px-3 py-4 shadow-xl transition-transform duration-200 ${
+            mobileOpen ? 'translate-x-0' : '-translate-x-full'
+          }`}
+        >
+          <div className="mb-2 flex items-center gap-3">
+            <img src={logo} alt="Leyendas" className="h-10 w-10 shrink-0 rounded-lg object-cover" />
+            <span className="flex-1 text-lg font-bold text-primary">Leyendas</span>
+            <button
+              type="button"
+              onClick={() => setMobileOpen(false)}
+              aria-label="Cerrar menú"
+              tabIndex={mobileOpen ? 0 : -1}
+              className="rounded-lg p-2 text-foreground-soft hover:bg-surface hover:text-primary"
+            >
+              <LuX className="h-6 w-6" aria-hidden="true" />
+            </button>
+          </div>
+
+          <nav className="flex flex-col gap-1">
             {visible.map((l) => (
               <NavLink
                 key={l.to}
                 to={l.to}
-                className={({ isActive }) =>
-                  `shrink-0 rounded-lg px-2.5 py-2 text-sm font-semibold sm:px-3 ${
-                    isActive ? 'bg-primary text-on-primary' : 'text-foreground-soft hover:bg-surface'
-                  }`
-                }
+                onClick={() => setMobileOpen(false)}
+                tabIndex={mobileOpen ? 0 : -1}
+                className={({ isActive }) => navItemClass(isActive, 'h-12 text-base')}
               >
+                <l.icon className="h-5 w-5 shrink-0" aria-hidden="true" />
                 {l.label}
               </NavLink>
             ))}
           </nav>
-        </div>
-        <div className="flex shrink-0 items-center gap-3">
-          <span className="hidden text-xs text-muted sm:inline">{session?.user.email}</span>
-          <button
-            onClick={signOut}
-            className="rounded-lg bg-surface-strong px-3 py-2 text-sm font-semibold hover:bg-surface-hover"
-          >
-            Salir
-          </button>
-        </div>
-      </header>
-      <main className="flex flex-1 flex-col">
-        <Outlet />
-      </main>
+
+          {/* El correo no cabe arriba en celular: se muestra aquí */}
+          {session?.user.email && (
+            <p className="mt-auto truncate border-t border-line pt-3 text-xs text-muted">{session.user.email}</p>
+          )}
+        </aside>
+      </div>
     </div>
   )
 }
